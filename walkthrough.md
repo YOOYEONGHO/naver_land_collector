@@ -61,7 +61,24 @@ Streamlit Cloud 등에 배포 시 데이터 유지를 위해 **구글 스프레�
 
 **설정 방법:**
 1. `.streamlit/secrets.toml` 파일 생성 (로컬 실행 시) 또는 Streamlit Cloud의 Secrets 설정에 아래 내용을 추가합니다.
-2. 구글 클라우드 콘솔 서비스 계정(JSON 키)이 필요합니다.
+
+### 🔑 구글 서비스 계정 키 발급 및 설정 가이드
+1. **Google Cloud Console 접속**: [https://console.cloud.google.com/](https://console.cloud.google.com/) 에 접속하여 새 프로젝트를 생성합니다.
+2. **API 사용 설정**:
+   - 상단 검색창에 **"Google Sheets API"** 검색 -> **사용(Enable)** 클릭.
+   - 상단 검색창에 **"Google Drive API"** 검색 -> **사용(Enable)** 클릭.
+3. **서비스 계정 생성**:
+   - 메뉴 -> **IAM 및 관리** -> **서비스 계정** -> **+ 서비스 계정 만들기**.
+   - 이름 입력 후 **완료**.
+4. **키(JSON) 다운로드**:
+   - 생성된 서비스 계정 클릭 -> **키** 탭 -> **키 추가** -> **새 키 만들기** -> **JSON** 선택 -> **만들기**.
+   - 컴퓨터에 JSON 파일이 다운로드됩니다.
+5. **구글 시트 공유**:
+   - 데이터를 저장할 **구글 스프레드시트**를 새로 만듭니다.
+   - 우측 상단 **"공유"** 버튼 클릭 -> 방금 다운로드한 JSON 파일 안에 있는 `client_email` 주소(예: `...iam.gserviceaccount.com`)를 입력하고 **편집자 권한**으로 공유합니다.
+6. **Secrets 입력**:
+   - 다운로드한 JSON 파일을 메모장으로 엽니다.
+   - 그 안의 내용을 복사하여 `.streamlit/secrets.toml` 파일의 해당 항목에 붙여넣습니다 (따옴표 안에 값만).
 
 ```toml
 [connections.gsheets]
