@@ -40,63 +40,255 @@ st.markdown("**허위매물** 의심 사례 수집을 위한 데이터 크롤링
 # Sidebar
 st.sidebar.header("🛠 수집 설정")
 
-# Default complex ID (e.g., Eunma Apt: 1116, Mapo Raemian Purgio: 104253)
-complex_id = st.sidebar.text_input("단지 식별 번호 (hscpNo)", value="108064", help="네이버 부동산 단지 페이지 URL에서 확인 가능합니다.")
+# Restore params from URL if available (for Auto Mode consistency across reloads)
+qp_complex = st.query_params.get("complex", "108064")
+qp_interval = int(st.query_params.get("interval", 2))
+
+# Inputs
+complex_id = st.sidebar.text_input("단지 식별 번호 (hscpNo)", value=qp_complex, help="네이버 부동산 단지 페이지 URL에서 확인 가능합니다.")
 trade_type_map = {"매매 (Sale)": "A1", "전세 (Jeonse)": "B1", "월세 (Rent)": "B2"}
 trade_type_label = st.sidebar.selectbox("매물 종류", list(trade_type_map.keys()))
 trade_type_code = trade_type_map[trade_type_label]
 
-if st.sidebar.button("🚀 매물 수집 시작"):
+# --- Logic Functions ---
+if 'auto_running' not in st.session_state:
+    st.session_state.auto_running = False
+
+def run_collection_task():
     with st.spinner(f"단지 ID {complex_id} 데이터 수집 중..."):
         try:
             crawler = NaverLandCrawler()
             new_data = crawler.fetch_listings(complex_no=complex_id, trade_type=trade_type_code)
-            
             if new_data:
                 save_data(new_data)
-                st.sidebar.success(f"{len(new_data)}건의 매물을 수집했습니다!")
+                return True, f"수집 완료: {len(new_data)}건"
             else:
-                st.sidebar.warning("매물을 찾을 수 없거나 API가 변경되었습니다.")
+                return False, "매물 없음 또는 API 오류"
         except Exception as e:
-            st.sidebar.error(f"오류 발생: {e}")
+            return False, f"오류: {e}"
 
-# Auto Collection Logic
+# --- Sidebar Inputs ---
+interval_min = st.sidebar.number_input("수집 주기 (분)", min_value=1, max_value=60, value=qp_interval)
+
 st.sidebar.markdown("---")
-st.sidebar.header("🔄 자동 수집")
-auto_collect = st.sidebar.checkbox("자동 수집 모드 활성화")
-interval_min = st.sidebar.number_input("수집 주기 (분)", min_value=1, value=30, step=1)
+st.sidebar.header("👮 관리자 설정")
 
-if auto_collect:
-    placeholder = st.sidebar.empty()
-    placeholder.info(f"자동 모드 동작 중... ({interval_min}분 주기)")
+# Password Input with Session State
+if "admin_pw" not in st.session_state:
+    st.session_state.admin_pw = ""
+
+password_input = st.sidebar.text_input("관리자 비밀번호", type="password", key="admin_pw")
+
+# Auto-Collection State
+if "is_auto_active" not in st.session_state:
+    st.session_state.is_auto_active = False
+
+# Status Display
+status_text = "🟢 자동 수집 활성화" if st.session_state.is_auto_active else "🔴 자동 수집 중지"
+st.sidebar.markdown(f"**상태:** {status_text}")
+
+# Action Callbacks
+def on_start_click():
+    if st.session_state.admin_pw == "Aqwe123!@#":
+        st.session_state.is_auto_active = True
+        st.session_state.trigger_run = True 
+        st.session_state.admin_pw = ""
+        st.session_state.auth_msg = ("success", "자동 수집이 시작되었습니다.")
+        # Persist State AND Inputs via Query Param
+        st.query_params["auto"] = "true"
+        st.query_params["complex"] = complex_id
+        st.query_params["interval"] = str(interval_min)
+    else:
+        st.session_state.auth_msg = ("error", "비밀번호가 올바르지 않습니다!")
+
+def on_stop_click():
+    if st.session_state.admin_pw == "Aqwe123!@#":
+        st.session_state.is_auto_active = False
+        st.session_state.admin_pw = ""
+        st.session_state.auth_msg = ("success", "자동 수집이 중지되었습니다.")
+        # Clear Query Params
+        st.query_params.clear()
+    else:
+        st.session_state.auth_msg = ("error", "비밀번호가 올바르지 않습니다!")
+
+col_btn1, col_btn2 = st.sidebar.columns(2)
+col_btn1.button("🚀 수집 시작", on_click=on_start_click, use_container_width=True)
+col_btn2.button("🛑 수집 중지", on_click=on_stop_click, use_container_width=True)
+
+# Message handling
+if "auth_msg" in st.session_state and st.session_state.auth_msg:
+    msg_type, msg_text = st.session_state.auth_msg
+    if msg_type == "success":
+        st.sidebar.success(msg_text)
+    else:
+        st.sidebar.error(msg_text)
+    st.session_state.auth_msg = None
+
+# Show Result from previous trigger run if any
+if "trigger_result" in st.session_state and st.session_state.trigger_result:
+    is_success, t_msg = st.session_state.trigger_result
+    if is_success:
+        st.sidebar.success(f"[자동] {t_msg}")
+    else:
+        st.sidebar.error(f"[자동] {t_msg}")
+    # Clear matches on next interaction, but for now leaving it is fine or clear??
+    # If we don't clear, it stays. Let's keep it visible until next run.
+
+# --- Auto Collection Logic (Non-blocking & Robust) ---
+import streamlit.components.v1 as components
+
+# 0. Check Query Params for Restoration/Trigger (Fix for refresh stopping auto-mode)
+if st.query_params.get("auto") == "true":
+    st.session_state.is_auto_active = True
+
+# 1. Trigger Handling (Immediate or from Reload)
+param_trigger = st.query_params.get("trigger")
+
+if st.session_state.get('trigger_run') or param_trigger:
+    st.session_state.trigger_run = False
     
-    # Check if we should run (simplified logic: just run and sleep, limiting interactivity)
-    # Ideally, we would track last_run in session_state, but for a blocking script:
-    with st.spinner(f"자동 수집 중... (주기: {interval_min}분)"):
-        try:
-            crawler = NaverLandCrawler()
-            # Auto collect using the input complex ID
-            new_data = crawler.fetch_listings(complex_no=complex_id, trade_type=trade_type_code)
-            if new_data:
-                save_data(new_data)
-                st.toast(f"자동 수집 완료: {len(new_data)}건")
-        except Exception as e:
-            st.error(f"자동 수집 오류: {e}")
-            
-    # Wait loop
-    for i in range(interval_min * 60, 0, -1):
-        placeholder.info(f"다음 수집까지 {i}초 남음...")
-        time.sleep(1)
+    # Run Collection
+    # Update: run_collection_task returns status
+    success, msg = run_collection_task()
+    
+    # Save result to session state to show AFTER rerun
+    st.session_state.trigger_result = (success, msg)
+    
+    # Update Time
+    st.session_state.last_run_time = time.time()
+    
+    # Trigger cleanup
+    if param_trigger:
+        st.query_params.clear()
+        st.query_params["auto"] = "true"
+        # Restore input params to URL so they persist on NEXT reload too
+        st.query_params["complex"] = complex_id
+        st.query_params["interval"] = str(interval_min)
+        
     st.rerun()
+
+# 2. Scheduled Logic
+if st.session_state.is_auto_active:
+    # Initialize last_run_time if missing
+    if 'last_run_time' not in st.session_state:
+         st.session_state.last_run_time = time.time()
+    
+    now = time.time()
+    gap = interval_min * 60
+    
+    # Calculate next scheduled time
+    next_run = st.session_state.last_run_time + gap
+    remaining = next_run - now
+    
+    # Safety Check: If remaining is negative but we didn't trigger yet (maybe slight drift),
+    # or if we just missed the trigger logic above.
+    # But usually the JS reload with 'trigger' handles the expiration.
+    # The 'remaining' here is for the NEXT run (after the one we just did or are waiting for).
+    
+    # Display Countdown
+    # If logic works, 'remaining' should be positive (gap) right after a run.
+    # If we are waiting, it decreases.
+    if remaining <= 0:
+        # Fallback if JS didn't reload or something
+        # Just show 0 or reload manually?
+        # Let's show "Updating..."
+        st.sidebar.warning("갱신 중...")
+        st.rerun()
+    else:
+        # Wait mode - Show live countdown using JS
+        countdown_html = f"""
+        <div style="
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #f0f2f6; 
+            color: #31333F;
+            border: 1px solid #d6d6d6;
+            font-family: sans-serif;
+            font-size: 14px;
+            text-align: center;
+        ">
+            ⏳ 다음 수집까지 <b><span id="timer">{int(remaining)}</span>초</b>
+        </div>
+        <script>
+            var timeleft = {int(remaining)};
+            var countdownElement = document.getElementById("timer");
+            
+            var downloadTimer = setInterval(function(){{
+                timeleft--;
+                if(timeleft >= 0){{
+                    countdownElement.textContent = timeleft;
+                }}
+                
+                if(timeleft <= 0){{
+                    clearInterval(downloadTimer);
+                    // Reload with trigger param to force collection
+                    // Use window.location (current iframe) instead of parent to avoid Cross-Origin issues on Cloud
+                    try {{
+                        const url = new URL(window.location.href);
+                        url.searchParams.set('auto', 'true');
+                        url.searchParams.set('trigger', Date.now());
+                        window.location.href = url.href;
+                    }} catch(e) {{
+                        console.error(e);
+                        window.location.reload();
+                    }}
+                }}
+            }}, 1000);
+        </script>
+        """
+        
+        # Inject into sidebar
+        with st.sidebar:
+            components.html(countdown_html, height=60, scrolling=False)
 
 # Main Content
 st.markdown("---")
+
+# Custom CSS to remove 'running' opacity overlay and other tweaks
+st.markdown("""
+    <style>
+    /* 
+       Streamlit grays out the app when running. 
+       We target common containers to force opacity to 1.
+    */
+    
+    /* Main App Container */
+    .stApp {
+        opacity: 1 !important;
+    }
+    
+    /* The view container that holds main and sidebar */
+    [data-testid="stAppViewContainer"] {
+        opacity: 1 !important;
+    }
+    
+    /* The actual content blocks */
+    [data-testid="stAppViewBlockContainer"] {
+        opacity: 1 !important;
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        opacity: 1 !important;
+    }
+    
+    /* Header */
+    header[data-testid="stHeader"] {
+        opacity: 1 !important;
+    }
+    
+    /* Disable transitions that might look like fading */
+    * {
+        transition: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # Load Data
 data = load_data()
 
 if not data:
-    st.info("수집된 데이터가 없습니다. 왼쪽 사이드바에서 수집을 시작해주세요.")
+    st.info("수집된 데이터가 없습니다. 왼쪽 사이드바에서 '수집 시작'을 눌러주세요.")
 else:
     df = pd.DataFrame(data)
     
@@ -133,203 +325,231 @@ else:
         
     filtered_df = df[df['atclNm'].isin(selected_complex)]
 
-    # Metrics Logic (Snapshot based)
-    
-    # 1. Identify the 'Latest' snapshot time for the selected filtered data
-    unique_timestamps = sorted(filtered_df['timestamp'].unique(), reverse=True)
-    
-    if not unique_timestamps:
-        latest_count = 0
-        avg_price = 0
-        new_listing_count = 0
-    else:
-        latest_ts = unique_timestamps[0]
-        latest_snapshot = filtered_df[filtered_df['timestamp'] == latest_ts]
+    # Create Tabs (Renamed per user request)
+    tab1, tab2 = st.tabs(["📈 증감량 추이", "🔎 매물 상세 분석"])
+
+    with tab1:
+        # --- Metrics Logic ---
+        unique_timestamps = sorted(filtered_df['timestamp'].unique(), reverse=True)
         
-        # Metric 1: Current Active Listings (Latest Snapshot Count)
-        latest_count = len(latest_snapshot)
-        
-        # Metric 2: Avg Price of Latest Snapshot
-        avg_price = latest_snapshot['price_int'].mean()
-        
-        # Metric 3: New Listings (Latest vs Previous)
-        if len(unique_timestamps) > 1:
-            prev_ts = unique_timestamps[1]
-            prev_snapshot = filtered_df[filtered_df['timestamp'] == prev_ts]
-            
-            # Find listings in Latest that were NOT in Previous (by articleNo)
-            new_items = latest_snapshot[~latest_snapshot['articleNo'].isin(prev_snapshot['articleNo'])]
-            new_listing_count = len(new_items)
+        if not unique_timestamps:
+            latest_count = 0
+            avg_price = 0
+            count_diff = 0 # Renamed from new_listing_count
+            ts_display = "-"
+            latest_df = pd.DataFrame()
         else:
-            # If only one snapshot exists, everything is "new" or 0 depending on definition. 
-            # Usually users want to know what changed. If first run, maybe N/A or just count.
-            # Let's show 0 as baseline or count. User asked "added listings compared to previous".
-            # If no previous, 0 is safer representation of "change".
-            new_listing_count = 0
+            latest_ts = unique_timestamps[0]
+            ts_display = pd.to_datetime(latest_ts).strftime("%Y/%m/%d %H:%M")
+            latest_df = filtered_df[filtered_df['timestamp'] == latest_ts]
+            
+            latest_count = len(latest_df)
+            avg_price = latest_df['price_int'].mean()
+            
+            if len(unique_timestamps) > 1:
+                prev_ts = unique_timestamps[1]
+                prev_snapshot = filtered_df[filtered_df['timestamp'] == prev_ts]
+                count_diff = latest_count - len(prev_snapshot)
+                
+                # New Arrivals (Purely new items)
+                new_ids = set(latest_df['articleNo']) - set(prev_snapshot['articleNo'])
+                new_listing_count = len(new_ids)
+                
+                # Deleted items (Transactions or Cancelled)
+                deleted_ids = set(prev_snapshot['articleNo']) - set(latest_df['articleNo'])
+                deleted_count = len(deleted_ids)
+            else:
+                count_diff = 0
+                new_listing_count = 0
+                deleted_count = 0
 
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("현재 매물 수 (최신)", latest_count)
-    with m2:
-        # Format large number
-        st.metric("평균 가격 (최신)", f"{avg_price/100000000:.2f} 억" if avg_price else "0 억")
-    with m3:
-        st.metric("신규 매물 (이전 대비)", f"+{new_listing_count}" if new_listing_count > 0 else str(new_listing_count))
+        # Display Metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric(f"현재 매물 수 ({ts_display} 기준)", f"{latest_count}개")
+        col2.metric(f"평균 가격 ({ts_display} 기준)", f"{avg_price/100000000:.2f} 억" if avg_price else "0 억")
+        col3.metric("매물 수 증감 (이전 대비)", f"{count_diff:+}개", delta=count_diff)
+        col4.metric("신규 진입 매물 (New)", f"{new_listing_count}개")
+        col5.metric("삭제된 매물 (Sold/Cancel)", f"{deleted_count}개")
 
-    # Charts
-    st.subheader("📊 데이터 시각화 분석")
-    
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.markdown("### 가격대 분포")
-        # Histogram with custom binning or just x-axis format
-        # Use price_eok for 억 unit
-        fig_hist = px.histogram(filtered_df, x="price_eok", nbins=20, title="가격대 분포 (단위: 억원)", 
-                                labels={"price_eok": "가격 (억원)"})
-        # Update x-axis to show 1 decimal
-        fig_hist.update_layout(xaxis=dict(tickformat=".1f", ticksuffix="억"))
-        st.plotly_chart(fig_hist, width="stretch")
+        st.markdown("---")
+
+        # --- Lowest Price Analysis ---
+        st.subheader(f"📉 전용면적별 최저가 매물 ({ts_display} 기준)")
+        if not latest_df.empty:
+            idx = latest_df.groupby('spc2')['price_int'].idxmin()
+            lowest_price_df = latest_df.loc[idx].sort_values('spc2')
+            
+            display_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
+            display_df = lowest_price_df[display_cols].copy()
+            # tradePrice is already string like "10억", we can keep it or format price_int? 
+            # User wants to SEE price. tradePrice is "10억 5,000", good for display.
+            display_df.columns = ['전용면적', '가격', '층수', '향', '동', '중개사']
+            
+            st.dataframe(display_df, width="stretch", hide_index=True)
+        else:
+            st.info("데이터가 없습니다.")
+
+        st.markdown("---")
+
+        # --- Charts ---
+        col_c1, col_c2 = st.columns(2)
         
-    with c2:
-        st.markdown("### 가격 vs 면적 (미끼매물 탐지)")
-        # Scatter
-        fig_scatter = px.scatter(filtered_df, x="spc2", y="price_eok", color="floorInfo", 
-                                 hover_data=["atclNm", "buildingName", "tradePrice", "realtorName"], 
-                                 title="전용면적 vs 가격 (단위: 억원)",
-                                 labels={"price_eok": "가격 (억원)", "spc2": "전용면적 (m²)"})
-        # Update y-axis to show 1 decimal
-        fig_scatter.update_layout(yaxis=dict(tickformat=".0f", ticksuffix="억"))
-        st.plotly_chart(fig_scatter, width="stretch")
+        with col_c1:
+            # Price Distribution
+            # Use price_int for histogram numeric
+            # Ticks: 50 million won interval
+            step = 50000000 # 5000만원
+            min_p = int(latest_df['price_int'].min())
+            max_p = int(latest_df['price_int'].max())
+            tick_vals = list(range(min_p, max_p + step, step))
+            
+            def format_kr_price_tick(x):
+                # x is in won. 1450000000 -> 14.5 -> 14억 5천
+                eok = x // 100000000
+                chun = (x % 100000000) // 10000
+                if chun == 0:
+                    return f"{eok}억"
+                elif chun == 5000:
+                    return f"{eok}억 5천"
+                else:
+                    return f"{x/100000000:.1f}억"
 
-    # New Chart: Area Distribution (Histogram standard)
-    st.markdown("### 면적별 매물 수")
-    # Use histogram matching price distribution style
-    fig_area = px.histogram(filtered_df, x='spc2', title="면적별 매물 수", 
-                      labels={"spc2": "전용면적 (m²)"}).update_yaxes(title="매물 수")
-    st.plotly_chart(fig_area, width="stretch")
+            tick_text = [format_kr_price_tick(x) for x in tick_vals]
 
-    # Timeline of Collections
-    st.markdown("### 📈 시간대별 수집 매물 수 변화")
-    if 'timestamp' in filtered_df.columns:
+            fig_hist = px.histogram(latest_df, x="price_int", nbins=20, title="매물 가격 분포 (최신)")
+            fig_hist.update_xaxes(tickformat=".1f", ticksuffix="억", title="가격 (원)", 
+                                  tickvals=tick_vals,
+                                  ticktext=tick_text)
+            st.plotly_chart(fig_hist, width="stretch")
+            
+        with col_c2:
+             # Area Distribution
+            fig_area = px.histogram(latest_df, x="spc2", nbins=10, title="면적별 매물 분포 (최신)")
+            fig_area.update_xaxes(title="전용면적 (m²)")
+            fig_area.update_yaxes(title="매물 수")
+            st.plotly_chart(fig_area, width="stretch")
+
+        # Trend Chart
         # Group by EXACT timestamp (Snapshot)
         trend_df = filtered_df.groupby('timestamp').size().reset_index(name='count')
-        # Convert to datetime for proper formatting
         trend_df['timestamp_dt'] = pd.to_datetime(trend_df['timestamp'])
-        # Sort by timestamp
         trend_df = trend_df.sort_values('timestamp_dt')
+        trend_df = trend_df.tail(10)
+        trend_df['xaxis_label'] = trend_df['timestamp_dt'].dt.strftime("%Y/%m/%d %H:%M")
         
-        fig_line = px.line(trend_df, x='timestamp_dt', y='count', markers=True, 
-                           title="매물 수집 시점별 매물 수 변화",
-                           labels={"timestamp_dt": "수집 일시", "count": "매물 수 (개)"})
-        # Format X-axis
-        fig_line.update_xaxes(tickformat="%Y/%m/%d %H:%M")
+        fig_line = px.line(trend_df, x='xaxis_label', y='count', markers=True, 
+                           title="매물 수집 시점별 매물 수 변화 (최근 10회)",
+                           labels={"xaxis_label": "수집 일시", "count": "매물 수 (개)"})
+        
+        min_count = trend_df['count'].min()
+        max_count = trend_df['count'].max()
+        y_min = max(0, min_count - 10)
+        y_max = max_count + 10
+        
+        fig_line.update_xaxes(type='category')
+        fig_line.update_yaxes(tickformat="d", dtick=1, range=[y_min, y_max])
         st.plotly_chart(fig_line, width="stretch")
 
-    # Advanced Analysis: Realtor & Building
-    st.markdown("---")
-    st.subheader("🕵️ 부동산 및 동별 상세 분석")
-    st.info("표에서 행을 클릭하면 해당 항목의 **시간대별 매물 수 변화**를 아래 그래프로 확인할 수 있습니다.")
-    
-    t1, t2 = st.tabs(["부동산(중개사)별 분석", "동(Building)별 분석"])
-    
-    # 1. Realtor Analysis
-    with t1:
-        if 'latest_snapshot' in locals() and not latest_snapshot.empty:
-            # Count by Realtor in Latest Snapshot
-            realtor_counts = latest_snapshot['realtorName'].value_counts().reset_index()
-            realtor_counts.columns = ['중개사명', '매물수']
-            
-            # Interactive Dataframe
-            st.markdown("##### 중개사별 보유 매물 현황 (최신)")
-            selection_realtor = st.dataframe(realtor_counts, width="stretch", 
-                                           on_select="rerun", selection_mode="single-row",
-                                           hide_index=True)
-            
-            # Drill down chart
-            if selection_realtor and selection_realtor["selection"]["rows"]:
-                selected_idx = selection_realtor["selection"]["rows"][0]
-                target_realtor = realtor_counts.iloc[selected_idx]['중개사명']
-                
-                st.markdown(f"**📉 '{target_realtor}' 매물 수 변화 추이**")
-                
-                # Filter history for this realtor
-                realtor_history = filtered_df[filtered_df['realtorName'] == target_realtor]
-                # Group by timestamp
-                r_trend = realtor_history.groupby('timestamp').size().reset_index(name='count')
-                
-                fig_r = px.line(r_trend, x='timestamp', y='count', markers=True,
-                                labels={"timestamp": "수집 일시", "count": "매물 수"})
-                st.plotly_chart(fig_r, width="stretch")
-                
-                # Show Listing Details for this Realtor
-                st.markdown(f"**📋 '{target_realtor}' 매물 목록 (최신)**")
-                # Filter from latest_snapshot
-                realtor_listings = latest_snapshot[latest_snapshot['realtorName'] == target_realtor]
-                # Columns to show
-                display_cols = ['articleNo', 'spc2', 'buildingName', 'floorInfo', 'tradePrice', 'direction', 'atclFetrDesc']
-                # Check if columns exist
-                available_cols = [c for c in display_cols if c in realtor_listings.columns]
-                
-                st.dataframe(realtor_listings[available_cols], width="stretch", hide_index=True)
-        else:
-            st.warning("분석할 최신 데이터가 없습니다.")
+        # --- Data Grid (Latest) ---
+        st.markdown("---")
+        st.subheader("📋 전체 매물 데이터 (최신)")
+        st.dataframe(latest_df.sort_values(by="timestamp", ascending=False), width="stretch")
 
-    # 2. Building Analysis
-    with t2:
-        if 'latest_snapshot' in locals() and not latest_snapshot.empty:
-            # Count by Building in Latest Snapshot
-            build_counts = latest_snapshot['buildingName'].value_counts().reset_index()
-            build_counts.columns = ['동(Building)', '매물수']
-            
-            # Interactive Dataframe
-            st.markdown("##### 동별 매물 현황 (최신)")
-            selection_build = st.dataframe(build_counts, width="stretch", 
-                                           on_select="rerun", selection_mode="single-row", 
-                                           hide_index=True)
-            
-            # Drill down chart
-            if selection_build and selection_build["selection"]["rows"]:
-                selected_idx = selection_build["selection"]["rows"][0]
-                target_build = build_counts.iloc[selected_idx]['동(Building)']
-                
-                st.markdown(f"**📉 '{target_build}' 매물 수 변화 추이**")
-                
-                # Filter history
-                build_history = filtered_df[filtered_df['buildingName'] == target_build]
-                b_trend = build_history.groupby('timestamp').size().reset_index(name='count')
-                
-                fig_b = px.line(b_trend, x='timestamp', y='count', markers=True,
-                                labels={"timestamp": "수집 일시", "count": "매물 수"})
-                st.plotly_chart(fig_b, width="stretch")
-                
-                # Show Listing Details for this Building
-                st.markdown(f"**📋 '{target_build}' 매물 목록 (최신)**")
-                # Filter from latest_snapshot
-                build_listings = latest_snapshot[latest_snapshot['buildingName'] == target_build]
-                # Columns to show
-                display_cols_b = ['articleNo', 'buildingName', 'floorInfo', 'spc2', 'tradePrice', 'direction', 'realtorName', 'atclFetrDesc']
-                # Check if columns exist
-                available_cols_b = [c for c in display_cols_b if c in build_listings.columns]
-                
-                st.dataframe(build_listings[available_cols_b], width="stretch", hide_index=True)
-        else:
-            st.warning("분석할 최신 데이터가 없습니다.")
 
-    # Main Grid (Keep at bottom)
+    with tab2:
+        # Advanced Analysis: Realtor & Building
+        st.header("🕵️ 상세 분석")
+        
+        subtab1, subtab2 = st.tabs(["🏢 부동산(중개사)별 분석", "🏙️ 동(Building)별 분석"])
+        
+        with subtab1:
+            st.subheader("부동산별 매물 수 (상위 20곳)")
+            if not latest_df.empty:
+                realtor_counts = latest_df['realtorName'].value_counts().reset_index()
+                realtor_counts.columns = ['realtorName', 'count']
+                
+                # Interactive Table
+                selection_realtor = st.dataframe(
+                    realtor_counts.head(20),
+                    width="stretch",
+                    on_select="rerun",
+                    selection_mode="single-row"
+                )
+                
+                # Drill-down
+                if selection_realtor.selection.rows:
+                    selected_idx_list = selection_realtor.selection.rows
+                    if selected_idx_list:
+                        selected_row_idx = selected_idx_list[0]
+                        selected_realtor = realtor_counts.iloc[selected_row_idx]['realtorName']
+                        
+                        st.divider()
+                        st.markdown(f"#### 🔎 '{selected_realtor}' 상세 분석")
+                        
+                        # 1. Trend for this realtor
+                        r_trend = filtered_df[filtered_df['realtorName'] == selected_realtor].groupby('timestamp').size().reset_index(name='count')
+                        r_trend['timestamp_dt'] = pd.to_datetime(r_trend['timestamp'])
+                        r_trend = r_trend.sort_values('timestamp_dt')
+                        r_trend['xaxis_label'] = r_trend['timestamp_dt'].dt.strftime("%Y/%m/%d %H:%M")
 
-    # Raw Data Grid
-    st.subheader("📋 상세 수집 기록 (최신 데이터 기준)")
-    if 'latest_snapshot' in locals() and not latest_snapshot.empty:
-        display_df = latest_snapshot.sort_values(by="tradePrice", ascending=False).reset_index(drop=True)
-        # 1-based index
-        display_df.index = display_df.index + 1
-        st.dataframe(display_df, width="stretch")
-    else:
-        st.markdown("표시할 최신 데이터가 없습니다.")
-    
+                        fig_r = px.line(r_trend, x='xaxis_label', y='count', markers=True, 
+                                        title=f"'{selected_realtor}' 매물 수 추이")
+                        fig_r.update_xaxes(type='category')
+                        fig_r.update_yaxes(tickformat="d", dtick=1, rangemode="tozero")
+                        st.plotly_chart(fig_r, width="stretch")
+
+                        # 2. Detailed Listing Table
+                        st.markdown(f"**현재 등록 매물 목록**")
+                        r_listings = latest_df[latest_df['realtorName'] == selected_realtor]
+                        cols_r = ['articleNo', 'spc2', 'buildingName', 'floorInfo', 'tradePrice', 'direction', 'atclFetrDesc']
+                        st.dataframe(r_listings[cols_r], width="stretch", hide_index=True)
+
+
+        with subtab2:
+            st.subheader("동별 매물 수")
+            if not latest_df.empty:
+                building_counts = latest_df['buildingName'].value_counts().reset_index()
+                building_counts.columns = ['buildingName', 'count']
+                
+                # Interactive Table
+                selection_building = st.dataframe(
+                    building_counts,
+                    width="stretch",
+                    on_select="rerun",
+                    selection_mode="single-row"
+                )
+                
+                # Drill-down
+                if selection_building.selection.rows:
+                    selected_idx_list_b = selection_building.selection.rows
+                    if selected_idx_list_b:
+                        selected_row_idx_b = selected_idx_list_b[0]
+                        selected_building = building_counts.iloc[selected_row_idx_b]['buildingName']
+                        
+                        st.divider()
+                        st.markdown(f"#### 🔎 '{selected_building}' 상세 분석")
+                        
+                        # 1. Trend for this building
+                        b_trend = filtered_df[filtered_df['buildingName'] == selected_building].groupby('timestamp').size().reset_index(name='count')
+                        b_trend['timestamp_dt'] = pd.to_datetime(b_trend['timestamp'])
+                        b_trend = b_trend.sort_values('timestamp_dt')
+                        b_trend['xaxis_label'] = b_trend['timestamp_dt'].dt.strftime("%Y/%m/%d %H:%M")
+
+                        fig_b = px.line(b_trend, x='xaxis_label', y='count', markers=True, 
+                                        title=f"'{selected_building}' 매물 수 추이")
+                        fig_b.update_xaxes(type='category')
+                        fig_b.update_yaxes(tickformat="d", dtick=1, rangemode="tozero")
+                        st.plotly_chart(fig_b, width="stretch")
+
+                        # 2. Detailed Listing Table
+                        st.markdown(f"**현재 등록 매물 목록**")
+                        b_listings = latest_df[latest_df['buildingName'] == selected_building]
+                        cols_b = ['articleNo', 'buildingName', 'floorInfo', 'spc2', 'tradePrice', 'direction', 'realtorName', 'atclFetrDesc']
+                        st.dataframe(b_listings[cols_b], width="stretch", hide_index=True)
+
     # Export
-    # Convert DF to CSV for download
+    # Convert DF to CSV for download (Use latest_df or filtered_df? User probably wants what they see in grid, which is latest)
+    # But usually export data implies all data. Let's keep filtered_df for export but raw grid is latest.
     csv = filtered_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button(
         label="💾 데이터 다운로드 (CSV)",
@@ -338,15 +558,16 @@ else:
         mime='text/csv',
     )
 
+
 # Danger Zone
 st.sidebar.markdown("---")
 st.sidebar.header("⚠️ 데이터 관리")
 if st.sidebar.button("🗑️ 모든 수집 데이터 삭제"):
-    import os
-    if os.path.exists("data.json"):
-        os.remove("data.json")
-        st.cache_data.clear() # Clear cache if using it, though we use load_data direct
-        st.sidebar.success("모든 데이터가 삭제되었습니다! 페이지를 새로고침하세요.")
-        st.rerun()
-    else:
-        st.sidebar.warning("삭제할 데이터 파일이 없습니다.")
+    from utils import clear_data
+    
+    with st.spinner("데이터 삭제 중..."):
+        clear_data()
+        
+    st.sidebar.success("모든 데이터가 삭제되었습니다! 페이지를 새로고침하세요.")
+    time.sleep(1)
+    st.rerun()

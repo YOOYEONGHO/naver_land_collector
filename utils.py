@@ -100,6 +100,42 @@ def save_data(new_items, filepath=DATA_FILE):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(updated_data, f, ensure_ascii=False, indent=2)
 
+def clear_data(filepath=DATA_FILE):
+    """
+    Clears all data from Google Sheets (if connected) AND local storage.
+    """
+    # 1. Clear Google Sheets
+    try:
+        conn = _get_gsheet_conn()
+        if conn:
+            # Try to preserve columns if possible
+            try:
+                # Read 0 rows just to get columns? Or read all.
+                # If sheet is already empty, this might return empty DF.
+                df = conn.read(ttl=0)
+                cols = df.columns if not df.empty else []
+            except:
+                cols = []
+            
+            # Create empty DF with same columns if they existed, else just empty
+            empty_df = pd.DataFrame(columns=cols) if len(cols) > 0 else pd.DataFrame()
+            
+            # Update
+            conn.update(data=empty_df)
+            st.cache_data.clear()
+            
+    except Exception as e:
+        # Ignore specific harmless error (1, 0) which implies empty range update success
+        if str(e) != "(1, 0)":
+            print(f"GSheets clear failed: {e}")
+        
+    # 2. Clear Local File
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+        except Exception as e:
+            print(f"Local delete failed: {e}")
+
 def clean_price(price_str):
     """
     Converts Korean price string (e.g., '10억 5,000', '3억 5,000') to integer (KRW).
