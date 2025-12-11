@@ -2,7 +2,10 @@ import json
 import os
 import pandas as pd
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+try:
+    from streamlit_gsheets import GSheetsConnection
+except ImportError:
+    GSheetsConnection = None
 from datetime import datetime, timezone, timedelta
 
 DATA_FILE = "data.json"
@@ -33,7 +36,8 @@ def load_data(filepath=DATA_FILE):
         conn = _get_gsheet_conn()
         # simplified check: if connection works and secrets exist
         if conn:
-            df = conn.read(worksheet="data", ttl=0) # ttl=0 for fresh read
+            # Read first available worksheet (default)
+            df = conn.read(ttl=0) 
             if not df.empty:
                 # Convert date/int columns if needed or just return records
                 # GSheets often reads as strings or floats, let's just convert to records
@@ -68,7 +72,7 @@ def save_data(new_items, filepath=DATA_FILE):
         if conn:
              # Read current
             try:
-                current_df = conn.read(worksheet="data", ttl=0)
+                current_df = conn.read(ttl=0)
             except:
                 current_df = pd.DataFrame()
                 
@@ -81,7 +85,7 @@ def save_data(new_items, filepath=DATA_FILE):
                 updated_df = new_df
                 
             # Write back
-            conn.update(worksheet="data", data=updated_df)
+            conn.update(data=updated_df)
             st.cache_data.clear()
             return
     except Exception as e:

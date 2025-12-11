@@ -214,12 +214,16 @@ else:
     if 'timestamp' in filtered_df.columns:
         # Group by EXACT timestamp (Snapshot)
         trend_df = filtered_df.groupby('timestamp').size().reset_index(name='count')
+        # Convert to datetime for proper formatting
+        trend_df['timestamp_dt'] = pd.to_datetime(trend_df['timestamp'])
         # Sort by timestamp
-        trend_df = trend_df.sort_values('timestamp')
+        trend_df = trend_df.sort_values('timestamp_dt')
         
-        fig_line = px.line(trend_df, x='timestamp', y='count', markers=True, 
+        fig_line = px.line(trend_df, x='timestamp_dt', y='count', markers=True, 
                            title="매물 수집 시점별 매물 수 변화",
-                           labels={"timestamp": "수집 일시", "count": "매물 수 (개)"})
+                           labels={"timestamp_dt": "수집 일시", "count": "매물 수 (개)"})
+        # Format X-axis
+        fig_line.update_xaxes(tickformat="%Y/%m/%d %H:%M")
         st.plotly_chart(fig_line, width="stretch")
 
     # Advanced Analysis: Realtor & Building

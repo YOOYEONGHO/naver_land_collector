@@ -60,7 +60,18 @@ python -m streamlit run app.py
 Streamlit Cloud 등에 배포 시 데이터 유지를 위해 **구글 스프레드시트**를 저장소로 사용할 수 있도록 코드가 수정되었습니다.
 
 **설정 방법:**
-1. `.streamlit/secrets.toml` 파일 생성 (로컬 실행 시) 또는 Streamlit Cloud의 Secrets 설정에 아래 내용을 추가합니다.
+1. `.streamlit/secrets.toml` 파일 생성 (로컬 실행 시)
+2. **Streamlit Cloud 배포 시**: GitHub에 이 파일을 올리지 마세요. 대신 Streamlit 대시보드에서 설정합니다.
+
+### 🌐 Streamlit Cloud 배포 시 Secrets 설정 방법
+1. Streamlit Cloud에 앱을 배포한 후, 대시보드(App Dashboard)로 이동합니다.
+2. 앱의 **Settings** (점 3개 메뉴) -> **Secrets** 메뉴를 클릭합니다.
+3. 텍스트 박스에 `secrets.toml` 파일의 내용을 그대로 복사해서 붙여넣습니다 (TOML 형식).
+   ```toml
+   [connections.gsheets]
+   ...
+   ```
+4. **Save**를 누르면 앱이 자동으로 재시작되면서 연동됩니다.
 
 ### 🔑 구글 서비스 계정 키 발급 및 설정 가이드
 1. **Google Cloud Console 접속**: [https://console.cloud.google.com/](https://console.cloud.google.com/) 에 접속하여 새 프로젝트를 생성합니다.
