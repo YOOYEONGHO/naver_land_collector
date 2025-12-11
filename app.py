@@ -84,8 +84,15 @@ if "is_auto_active" not in st.session_state:
     st.session_state.is_auto_active = False
 
 # Status Display
-status_text = "🟢 자동 수집 활성화" if st.session_state.is_auto_active else "🔴 자동 수집 중지"
-st.sidebar.markdown(f"**상태:** {status_text}")
+last_run_str = "-"
+if 'last_run_time' in st.session_state:
+    last_run_str = time.strftime("%H:%M:%S", time.localtime(st.session_state.last_run_time))
+
+status_icon = "🟢" if st.session_state.is_auto_active else "🔴"
+status_msg = "자동 수집 활성화" if st.session_state.is_auto_active else "자동 수집 중지"
+
+st.sidebar.markdown(f"**상태:** {status_icon} {status_msg}")
+st.sidebar.caption(f"최근 실행 시각: {last_run_str}")
 
 # Action Callbacks
 def on_start_click():
@@ -128,11 +135,15 @@ if "auth_msg" in st.session_state and st.session_state.auth_msg:
 if "trigger_result" in st.session_state and st.session_state.trigger_result:
     is_success, t_msg = st.session_state.trigger_result
     if is_success:
+        st.toast(f"✅ {t_msg}", icon="🎉")
         st.sidebar.success(f"[자동] {t_msg}")
     else:
+        st.toast(f"⚠️ {t_msg}", icon="🚨")
         st.sidebar.error(f"[자동] {t_msg}")
-    # Clear matches on next interaction, but for now leaving it is fine or clear??
-    # If we don't clear, it stays. Let's keep it visible until next run.
+    
+    # Clear result so it doesn't persist forever, but slight delay or next rerun clears it naturally?
+    # Better to clear it here so it doesn't show on manual interaction reruns
+    st.session_state.trigger_result = None
 
 # --- Auto Collection Logic (Non-blocking & Robust) ---
 import streamlit.components.v1 as components

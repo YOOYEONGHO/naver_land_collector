@@ -7,11 +7,14 @@ class NaverLandCrawler:
     def __init__(self):
         self.base_url = "https://m.land.naver.com/complex/getComplexArticleList"
         # Common headers to mimic a browser
+        self.base_url = "https://m.land.naver.com/complex/getComplexArticleList"
+        # Common headers to mimic a mobile browser
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
             "Referer": "https://m.land.naver.com/",
             "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest"
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
         }
 
     def fetch_listings(self, region_code=None, complex_no=None, trade_type="A1"):
