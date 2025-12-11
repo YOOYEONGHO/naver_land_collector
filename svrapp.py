@@ -149,6 +149,14 @@ def on_stop_click():
     else:
         st.session_state.auth_msg = ("error", "비밀번호가 올바르지 않습니다!")
 
+def on_clear_data_click():
+    if st.session_state.admin_pw == "Aqwe123!@#":
+        clear_data()
+        st.session_state.admin_pw = ""
+        st.session_state.auth_msg = ("success", "모든 데이터가 삭제되었습니다.")
+    else:
+        st.session_state.auth_msg = ("error", "비밀번호가 필요합니다.")
+
 col_btn1, col_btn2 = st.sidebar.columns(2)
 col_btn1.button("🚀 수집 시작", on_click=on_start_click, use_container_width=True)
 col_btn2.button("🛑 수집 중지", on_click=on_stop_click, use_container_width=True)
@@ -175,16 +183,7 @@ if "trigger_result" in st.session_state and st.session_state.trigger_result:
 
 # Data Manage
 st.sidebar.markdown("---")
-if st.sidebar.button("🗑️ 모든 데이터 삭제"):
-    if st.session_state.admin_pw == "Aqwe123!@#":
-        with st.spinner("데이터 삭제 중..."):
-            clear_data()
-        st.sidebar.success("식제 완료! 새로고침합니다.")
-        st.session_state.admin_pw = ""
-        time.sleep(1)
-        st.rerun()
-    else:
-        st.sidebar.error("비밀번호가 필요합니다.")
+st.sidebar.button("🗑️ 모든 데이터 삭제", on_click=on_clear_data_click)
 
 
 # --- Main Dashboard: Collection History ---

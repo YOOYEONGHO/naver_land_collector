@@ -163,13 +163,13 @@ with tab1:
             fig_hist = px.histogram(latest_df, x="price_int", nbins=20, title="매물 가격 분포 (최신)")
             fig_hist.update_xaxes(tickformat=".1f", ticksuffix="억", title="가격 (원)", 
                                   tickvals=tick_vals, ticktext=tick_text)
-            st.plotly_chart(fig_hist, use_container_width=True)
+            st.plotly_chart(fig_hist, use_container_width=True, key="chart_price_dist")
             
         with col_c2:
             fig_area = px.histogram(latest_df, x="spc2", nbins=10, title="면적별 매물 분포 (최신)")
             fig_area.update_xaxes(title="전용면적 (m²)")
             fig_area.update_yaxes(title="매물 수")
-            st.plotly_chart(fig_area, use_container_width=True)
+            st.plotly_chart(fig_area, use_container_width=True, key="chart_area_dist")
 
         # Trend Chart
         trend_df = filtered_df.groupby('timestamp').size().reset_index(name='count')
@@ -187,7 +187,7 @@ with tab1:
             fig_line.update_yaxes(tickformat="d", dtick=1, range=[y_min, y_max])
             
         fig_line.update_xaxes(type='category')
-        st.plotly_chart(fig_line, use_container_width=True)
+        st.plotly_chart(fig_line, use_container_width=True, key="chart_total_trend")
 
         st.markdown("---")
         st.subheader("📋 전체 매물 데이터 (최신)")
@@ -217,7 +217,7 @@ with tab2:
                 r_trend = r_trend.sort_values('ts')
                 
                 fig_r = px.line(r_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                st.plotly_chart(fig_r, use_container_width=True)
+                st.plotly_chart(fig_r, use_container_width=True, key="chart_realtor_trend")
                 
                 st.dataframe(latest_df[latest_df['realtorName'] == s_real], width="stretch", hide_index=True)
 
@@ -240,7 +240,7 @@ with tab2:
                 b_trend = b_trend.sort_values('ts')
                 
                 fig_b = px.line(b_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                st.plotly_chart(fig_b, use_container_width=True)
+                st.plotly_chart(fig_b, use_container_width=True, key="chart_building_trend")
                 
                 st.dataframe(latest_df[latest_df['buildingName'] == s_build], width="stretch", hide_index=True)
 
