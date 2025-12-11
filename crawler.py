@@ -7,7 +7,6 @@ class NaverLandCrawler:
     def __init__(self):
         self.base_url = "https://m.land.naver.com/complex/getComplexArticleList"
         # Common headers to mimic a browser
-        self.base_url = "https://m.land.naver.com/complex/getComplexArticleList"
         # Common headers to mimic a mobile browser
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
