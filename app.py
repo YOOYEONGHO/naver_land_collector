@@ -128,11 +128,15 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
             count_diff = 0
             new_listing_count = 0
             deleted_count = 0
+            new_ids = set()
+            deleted_ids = set()
     except ValueError:
         # timestamp not found?
         count_diff = 0
         new_listing_count = 0
         deleted_count = 0
+        new_ids = set()
+        deleted_ids = set()
 
     # Metrics Row
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -141,6 +145,25 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     col3.metric("증감 (이전 대비)", f"{count_diff:+}개", delta=count_diff)
     col4.metric("신규 진입", f"{new_listing_count}개")
     col5.metric("삭제됨", f"{deleted_count}개")
+
+    # --- Details for New/Deleted ---
+    if new_listing_count > 0:
+        with st.expander(f"🆕 신규 진입 매물 ({new_listing_count}개) 상세보기"):
+            new_entries_df = snapshot_df[snapshot_df['articleNo'].isin(new_ids)].copy()
+            # Select relevant columns for display
+            disp_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
+            show_df = new_entries_df[disp_cols]
+            show_df.columns = ['면적', '가격', '층수', '향', '동', '중개사']
+            st.dataframe(show_df, hide_index=True)
+
+    if deleted_count > 0:
+        with st.expander(f"🗑️ 삭제된 매물 ({deleted_count}개) 상세보기"):
+            # Get details from previous snapshot
+            del_entries_df = prev_snapshot[prev_snapshot['articleNo'].isin(deleted_ids)].copy()
+            disp_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
+            show_df = del_entries_df[disp_cols]
+            show_df.columns = ['면적', '가격', '층수', '향', '동', '중개사']
+            st.dataframe(show_df, hide_index=True)
 
     st.markdown("---")
 
