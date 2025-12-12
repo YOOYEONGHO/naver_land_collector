@@ -7,7 +7,7 @@ from utils import load_data
 
 # Page Config
 st.set_page_config(
-    page_title="네이버 부동산 허위매물 분석 대시보드",
+    page_title="네이버 부동산 매물 분석 대시보드",
     page_icon="🏢",
     layout="wide"
 )
@@ -30,7 +30,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🏢 부동산 매물 분석 현황판")
-st.markdown("실시간 수집 데이터를 기반으로 한 매물 증감 및 이상 징후 분석 대시보드입니다.")
+st.markdown("실시간 수집 데이터를 기반으로 한 매물 증감 및 분석 대시보드입니다.")
 
 # --- Auto Refresh Logic (Poll every 5 mins) ---
 refresh_interval_sec = 300 # 5 minutes
