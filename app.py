@@ -184,7 +184,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     col_c1, col_c2 = st.columns(2)
     
     with col_c1:
-        step = 50000000
+        step = 100000000
         min_p = int(snapshot_df['price_int'].min()) if not snapshot_df.empty else 0
         max_p = int(snapshot_df['price_int'].max()) if not snapshot_df.empty else 0
         
@@ -306,6 +306,7 @@ with tab3:
                     r_trend = r_trend.sort_values('ts')
                     
                     fig_r = px.line(r_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
+                    fig_r.update_yaxes(tickformat="d", dtick=1)
                     st.plotly_chart(fig_r, use_container_width=True, key="chart_realtor_trend")
                     
                     st.dataframe(latest_df[latest_df['realtorName'] == s_real], width="stretch", hide_index=True, key="tbl_realtor_detail")
@@ -329,6 +330,7 @@ with tab3:
                     b_trend = b_trend.sort_values('ts')
                     
                     fig_b = px.line(b_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
+                    fig_b.update_yaxes(tickformat="d", dtick=1)
                     st.plotly_chart(fig_b, use_container_width=True, key="chart_building_trend")
                     
                     st.dataframe(latest_df[latest_df['buildingName'] == s_build], width="stretch", hide_index=True, key="tbl_building_detail")
