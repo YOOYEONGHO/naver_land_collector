@@ -189,7 +189,12 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
         max_p = int(snapshot_df['price_int'].max()) if not snapshot_df.empty else 0
         
         if max_p > min_p:
-            tick_vals = list(range(min_p, max_p + step, step))
+            # Align min_p down to nearest step (1억)
+            start_val = (min_p // step) * step
+            # Align max_p up to nearest step
+            end_val = ((max_p // step) + 1) * step
+            
+            tick_vals = list(range(start_val, end_val + step, step))
             def format_kr(x):
                  eok = x // 100000000
                  chun = (x % 100000000) // 10000
@@ -306,7 +311,7 @@ with tab3:
                     r_trend = r_trend.sort_values('ts')
                     
                     fig_r = px.line(r_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                    fig_r.update_yaxes(tickformat="d", dtick=1)
+                    fig_r.update_yaxes(tickformat="d", dtick=1, range=[0, 20])
                     st.plotly_chart(fig_r, use_container_width=True, key="chart_realtor_trend")
                     
                     st.dataframe(latest_df[latest_df['realtorName'] == s_real], width="stretch", hide_index=True, key="tbl_realtor_detail")
@@ -330,7 +335,7 @@ with tab3:
                     b_trend = b_trend.sort_values('ts')
                     
                     fig_b = px.line(b_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                    fig_b.update_yaxes(tickformat="d", dtick=1)
+                    fig_b.update_yaxes(tickformat="d", dtick=1, range=[0, 20])
                     st.plotly_chart(fig_b, use_container_width=True, key="chart_building_trend")
                     
                     st.dataframe(latest_df[latest_df['buildingName'] == s_build], width="stretch", hide_index=True, key="tbl_building_detail")
