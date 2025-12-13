@@ -61,7 +61,8 @@ def load_data(filepath=DATA_FILE):
 
 def save_data(new_items, filepath=DATA_FILE):
     """
-    Appends new items to Google Sheets if configured, otherwise local JSON.
+    Appends new items to Google Sheets if configured, AND always synchronizes local JSON
+    to ensure the dashboard has a reliable fallback if GSheets read fails.
     """
     if not new_items:
         return
@@ -70,7 +71,7 @@ def save_data(new_items, filepath=DATA_FILE):
     try:
         conn = _get_gsheet_conn()
         if conn:
-             # Read current
+             # Read current from GSheet to append correctly
             try:
                 current_df = conn.read(ttl=0)
             except:
@@ -84,21 +85,33 @@ def save_data(new_items, filepath=DATA_FILE):
             else:
                 updated_df = new_df
                 
-            # Write back
+            # Write back to GSheets
             conn.update(data=updated_df)
             st.cache_data.clear()
+            
+            # CRITICAL FIX:
+            # Also save this complete updated dataset to local JSON.
+            # This ensures that if the dashboard fails to load the huge GSheet,
+            # the local fallback file is 100% up-to-date.
+            updated_data = updated_df.to_dict(orient="records")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(updated_data, f, ensure_ascii=False, indent=2)
+                
+            print(f"[System] Data saved to GSheets and synced to local {filepath} ({len(updated_data)} records)")
             return
+            
     except Exception as e:
-        # Fallback print?
-        print(f"GSheets save failed: {e}, falling back to local.")
+        print(f"GSheets save failed: {e}, falling back to local only.")
         pass
 
-    # Fallback to local JSON
+    # Fallback (Google Sheets failed or not configured)
+    # Just append to local file
     current_data = load_data(filepath)
     updated_data = current_data + new_items
     
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(updated_data, f, ensure_ascii=False, indent=2)
+    print(f"[System] Data saved to local only {filepath} ({len(updated_data)} records)")
 
 def clear_data(filepath=DATA_FILE):
     """
