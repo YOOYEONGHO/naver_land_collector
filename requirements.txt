@@ -1,9 +1,5 @@
 streamlit
 pandas
-requests
 plotly
-altair
-openpyxl
-st-gsheets-connection
-gspread
-oauth2client
+playwright
+supabase

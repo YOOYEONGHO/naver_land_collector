@@ -58,15 +58,20 @@ def run_collection_task(c_id, t_code):
     inv_map = {v: k for k, v in trade_type_map.items()}
     t_label = inv_map.get(t_code, t_code)
     
-    print(f"[Scheduler] Start collection: {c_id}, {t_label}")
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now_str}] [Scheduler] Start collection: {c_id}, {t_label}")
     try:
         crawler = NaverLandCrawler()
         new_data = crawler.fetch_listings(complex_no=c_id, trade_type=t_code)
         if new_data:
-            save_data(new_data)
-            msg = f"수집 완료: {len(new_data)}건"
-            print(f"[Scheduler] {msg}")
-            return True, msg
+            if save_data(new_data):
+                msg = f"수집 완료: {len(new_data)}건"
+                print(f"[Scheduler] {msg}")
+                return True, msg
+            else:
+                msg = "수집 데이터 저장 실패 (로그 확인)"
+                print(f"[Scheduler] {msg}")
+                return False, msg
         else:
             msg = "매물 없음 또는 API 오류"
             print(f"[Scheduler] {msg}")
@@ -132,7 +137,10 @@ class BackgroundScheduler:
                     self.last_run_time = time.time()
                     interval_sec = self.interval_minutes * 60
                     self.next_run_time = math.ceil(time.time() / interval_sec) * interval_sec 
-                    self.status_msg = f"대기 중 (최근: {msg})"
+                    
+                    next_run_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.next_run_time))
+                    self.status_msg = f"대기 중 (다음 수집: {next_run_str})"
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [Scheduler] Collection finished. Next run scheduled at: {next_run_str}")
             
             time.sleep(1)
 
@@ -228,11 +236,29 @@ if scheduler.is_running:
         
         # We use a simple meta refresh or st.rerun if we want lively updates
         # But extensive reruns are annoying. Let's do a gentle JS interval for reload
-        st.components.v1.html("""
+    if st.sidebar.button("🔄 상태 새로고침"):
+        st.rerun()
+
+    # Optional Auto-refresh
+    st.sidebar.markdown("---")
+    
+    monitor_interval_min = st.sidebar.number_input(
+        "모니터링 새로고침 주기 (분)", 
+        min_value=1, 
+        value=1, 
+        step=1,
+        help="브라우저 화면을 자동으로 새로고침하는 주기입니다."
+    )
+    
+    auto_refresh = st.sidebar.checkbox(f"⚡ 실시간 모니터링 켜기 ({monitor_interval_min}분 마다)", value=False)
+    
+    if auto_refresh:
+        refresh_ms = monitor_interval_min * 60 * 1000
+        st.components.v1.html(f"""
             <script>
-                setTimeout(function(){
+                setTimeout(function(){{
                     window.parent.location.reload();
-                }, 10000);
+                }}, {refresh_ms});
             </script>
         """, height=0)
 
