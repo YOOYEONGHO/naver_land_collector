@@ -111,7 +111,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     snapshot_df = view_df[view_df['timestamp'] == current_ts].copy()
     snapshot_df['type'] = snapshot_df['spc2'].apply(get_area_type)
     
-    # Previous Snapshot Logic
+    # Previous Snapshot Logic (Net Increase Metric)
     count_diff = 0
     prev_snapshot_df = pd.DataFrame()
     
@@ -125,7 +125,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
             
             count_diff = len(snapshot_df) - len(prev_snapshot_df)
             
-            # New/Deleted Sets
+            # New/Deleted Sets for Real-Time Metric (Current Pulse)
             new_ids = set(snapshot_df['articleNo']) - set(prev_snapshot_df['articleNo'])
             deleted_ids = set(prev_snapshot_df['articleNo']) - set(snapshot_df['articleNo'])
         else:
@@ -256,114 +256,110 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
 
     st.markdown("---")
     
-    # --- 7. Weekly Activity (Top 5) ---
+    # --- 7. Weekly Activity (CUMULATIVE EVENTS) ---
     st.subheader("📅 주간 부동산 활동 (Top 5)")
-    
-    # Stats Data Prep
+    st.caption("최근 1주일간 매 회차(약 20분)마다 발생한 신규/삭제 건수를 모두 누적한 수치입니다.")
+
+    # 1. Filter Period (Up to Current View)
     history_up_to_now = view_df[view_df['timestamp'] <= current_ts].copy()
     history_up_to_now['timestamp_dt'] = pd.to_datetime(history_up_to_now['timestamp'])
     
     current_dt = pd.to_datetime(current_ts)
     seven_days_ago = current_dt - timedelta(days=7)
     
-    # --------------------------------------------------------------------------------
-    # ROBUST BASELINE LOGIC (GAP DETECTION)
-    # Find the timestamp that marks the END of the "Initial Batch".
-    # We look for the first gap > 5 minutes in sorted timestamps.
-    # --------------------------------------------------------------------------------
-    all_ts_sorted = history_up_to_now['timestamp_dt'].sort_values().unique()
+    period_df = history_up_to_now[history_up_to_now['timestamp_dt'] > seven_days_ago]
     
-    baseline_cutoff_dt = all_ts_sorted[0] # Fallback: oldest timestamp
+    # 2. Sequential Processing
+    # Sort unique timestamps ASCENDING
+    sorted_ts = sorted(period_df['timestamp'].unique())
     
-    if len(all_ts_sorted) > 1:
-        # Check gaps
-        for i in range(len(all_ts_sorted) - 1):
-            t1 = all_ts_sorted[i]
-            t2 = all_ts_sorted[i+1]
-            if (t2 - t1).total_seconds() > 300: # 5 minutes gap found
-                baseline_cutoff_dt = t1 # The end of the first cluster
-                break
+    cum_new_count = 0
+    cum_del_count = 0
+    
+    realtor_new_counts = {}
+    realtor_del_counts = {}
+    
+    # We Iterate from i=1. The snapshot at i=0 is the START STATE (Baseline).
+    # New items appearing in snapshot[0] are NOT counted, as they were "already there".
+    # Only changes from 0->1, 1->2... count.
+    
+    if len(sorted_ts) > 1:
+        # Pre-group by timestamp to avoid repeatedly filtering the big DF
+        grouped = period_df.groupby('timestamp')
         
-        # If loop finishes without break, it implies NO gap > 5 mins (unlikely unless only 1 batch)
-        # In that case baseline_cutoff remains t[0]. Wait, if 1 batch, t[0]..t[n] are close.
-        # We want the MAX of the initial batch.
-        # So if no gap found, and spread is small, we take the LAST one.
-        if (all_ts_sorted[-1] - all_ts_sorted[0]).total_seconds() < 600: # < 10 mins total spread
-             baseline_cutoff_dt = all_ts_sorted[-1]
-
-    # Combine: Final Cutoff is max(7_days_ago, baseline_cutoff)
-    # This means: "Strictly New" = Came AFTER the baseline batch AND within last 7 days.
-    # If system is older than 7 days, baseline_cutoff is old, so max is 7_days_ago.
-    # If system is new, max is baseline_cutoff.
-    
-    cutoff_dt = max(baseline_cutoff_dt, seven_days_ago)
-    
-    # --------------------------------------------------------------------------------
-    
-    # 1. New Registrations
-    # Item First Seen > cutoff_dt
-    all_first_seen = history_up_to_now.groupby('articleNo')['timestamp_dt'].min()
-    new_in_week_ids = all_first_seen[all_first_seen > cutoff_dt].index
-    
-    
-    # 2. Deleted
-    # Definition: Items that were present in the window (Start of Window .. Now) but NOT in Current.
-    # "Window" starts at cutoff_dt (exclusive? actually inclusive for 'seen' logic).
-    # We want items that were valid active listings AFTER the baseline.
-    
-    # If baseline is Initial Batch: We care about deletions OF the initial batch too.
-    # So "Seen" set should INCLUDE the baseline batch IF we are in the "System < 1 week" mode.
-    # But cutoff_dt excludes it.
-    
-    # Wait, if I am new system, I want to knwo if Initial items were deleted.
-    # So "Seen" should include Initial items.
-    # So seen_cutoff should be cutoff_dt IF old system.
-    # IF new system (baseline > 7days ago? No, baseline is recent).
-    
-    if baseline_cutoff_dt > seven_days_ago:
-        # System is fresh. Window = All History (include Initial).
-        # We want to catch deleted initial items.
-        period_mask = history_up_to_now['timestamp_dt'] >= all_ts_sorted[0] # All
+        # Get set of IDs and Realtor mapping for each timestamp
+        # Optimization: Build a dict of {ts: {id: realtor_name}}
+        ts_data_map = {}
+        for ts, group in grouped:
+            # We use dict for fast lookup of realtor by ID
+            ts_data_map[ts] = dict(zip(group['articleNo'], group['realtorName']))
+            
+        # Iterate
+        prev_ts = sorted_ts[0]
+        prev_items = ts_data_map[prev_ts] # dict {id: realtor}
+        
+        for i in range(1, len(sorted_ts)):
+            curr_ts = sorted_ts[i]
+            curr_items = ts_data_map[curr_ts]
+            
+            prev_ids = set(prev_items.keys())
+            curr_ids = set(curr_items.keys())
+            
+            # Identify Changes
+            new_in_step = curr_ids - prev_ids
+            del_in_step = prev_ids - curr_ids
+            
+            # Accumulate Total Counts
+            cum_new_count += len(new_in_step)
+            cum_del_count += len(del_in_step)
+            
+            # Accumulate Realtor Counts
+            # For New: Use Realtor info from Current
+            for nid in new_in_step:
+                r_name = curr_items.get(nid, "알수없음")
+                realtor_new_counts[r_name] = realtor_new_counts.get(r_name, 0) + 1
+            
+            # For Deleted: Use Realtor info from Previous (when it existed)
+            for did in del_in_step:
+                r_name = prev_items.get(did, "알수없음")
+                realtor_del_counts[r_name] = realtor_del_counts.get(r_name, 0) + 1
+            
+            # Move Next
+            prev_ts = curr_ts
+            prev_items = curr_items
+            
     else:
-        # System is old. Window = last 7 days.
-        period_mask = history_up_to_now['timestamp_dt'] > seven_days_ago
+        # Only 1 snapshot exists (Fresh start). No changes yet.
+        pass
 
-    seen_ids = set(history_up_to_now[period_mask]['articleNo'])
-    current_ids = set(snapshot_df['articleNo'])
-    
-    deleted_in_week_ids = list(seen_ids - current_ids)
-    
-    
+
     # --- Summary Counts ---
     wc_total1, wc_total2 = st.columns(2)
-    wc_total1.metric("1주일간 신규 등록 건수", f"{len(new_in_week_ids)}건")
-    wc_total2.metric("1주일간 삭제된 건수", f"{len(deleted_in_week_ids)}건")
+    wc_total1.metric("1주일간 신규 등록 누적 건수", f"{cum_new_count}건")
+    wc_total2.metric("1주일간 삭제된 누적 건수", f"{cum_del_count}건")
     
     # --- Top 5 Calculation ---
-    if len(new_in_week_ids) > 0 or len(deleted_in_week_ids) > 0:
+    if cum_new_count > 0 or cum_del_count > 0:
         c_new, c_del = st.columns(2)
         
         # New Top 5
         with c_new:
-            st.markdown("##### ✨ 주간 최다 등록 부동산")
-            if len(new_in_week_ids) > 0:
-                id_map = history_up_to_now.sort_values('timestamp').drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
-                target_realtors = id_map.reindex(new_in_week_ids)
-                top_new = target_realtors.value_counts().head(5).reset_index()
-                top_new.columns = ['부동산', '등록 수']
-                st.dataframe(top_new, hide_index=True, use_container_width=True)
+            st.markdown("##### ✨ 주간 최다 등록 부동산 (누적)")
+            if realtor_new_counts:
+                # Convert dict to df
+                new_df = pd.DataFrame(list(realtor_new_counts.items()), columns=['부동산', '등록 건수'])
+                new_df = new_df.sort_values('등록 건수', ascending=False).head(5)
+                st.dataframe(new_df, hide_index=True, use_container_width=True)
             else:
                 st.info("신규 등록 없음")
 
         # Deleted Top 5
         with c_del:
-            st.markdown("##### 🗑️ 주간 최다 삭제 부동산")
-            if len(deleted_in_week_ids) > 0:
-                id_map_del = history_up_to_now.sort_values('timestamp').drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
-                target_realtors_del = id_map_del.reindex(deleted_in_week_ids)
-                top_del = target_realtors_del.value_counts().head(5).reset_index()
-                top_del.columns = ['부동산', '삭제 수']
-                st.dataframe(top_del, hide_index=True, use_container_width=True)
+            st.markdown("##### 🗑️ 주간 최다 삭제 부동산 (누적)")
+            if realtor_del_counts:
+                del_df = pd.DataFrame(list(realtor_del_counts.items()), columns=['부동산', '삭제 건수'])
+                del_df = del_df.sort_values('삭제 건수', ascending=False).head(5)
+                st.dataframe(del_df, hide_index=True, use_container_width=True)
             else:
                 st.info("삭제된 매물 없음")
     else:
