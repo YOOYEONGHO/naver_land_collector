@@ -259,72 +259,61 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     # --- 7. Weekly Activity (Top 5) ---
     st.subheader("📅 주간 부동산 활동 (Top 5)")
     
-    # Calculate Weekly Stats
-    # Need access to full history or at least enough to determine "First Seen" in last 7 days
-    # view_df has full filtered history.
+    # Logic Correction for "Weekly Activity"
+    # Scope: History UP TO current_ts
+    history_up_to_now = view_df[view_df['timestamp'] <= current_ts].copy()
+    history_up_to_now['timestamp_dt'] = pd.to_datetime(history_up_to_now['timestamp'])
     
     current_dt = pd.to_datetime(current_ts)
     seven_days_ago = current_dt - timedelta(days=7)
     
-    # Filter relevant history
-    period_df = view_df[(pd.to_datetime(view_df['timestamp']) > seven_days_ago) & 
-                        (pd.to_datetime(view_df['timestamp']) <= current_dt)]
+    # Identify "New in Week"
+    min_ts_per_article = history_up_to_now.groupby('articleNo')['timestamp_dt'].min()
+    new_in_week_series = min_ts_per_article[min_ts_per_article > seven_days_ago]
+    new_in_week_ids = new_in_week_series.index
     
-    if not period_df.empty:
-        # Valid Article IDs in current snapshot
-        current_ids = set(snapshot_df['articleNo'])
+    # Identify "Deleted in Week"
+    # (Seen in Week) - (Present Now)
+    week_df = history_up_to_now[history_up_to_now['timestamp_dt'] > seven_days_ago]
+    seen_in_week_ids = set(week_df['articleNo'])
+    current_ids = set(snapshot_df['articleNo'])
+    deleted_in_week_ids = list(seen_in_week_ids - current_ids)
+    
+    # --- Summary Counts (Requested Feature) ---
+    wc_total1, wc_total2 = st.columns(2)
+    wc_total1.metric("1주일간 신규 등록 건수", f"{len(new_in_week_ids)}건")
+    wc_total2.metric("1주일간 삭제된 건수", f"{len(deleted_in_week_ids)}건")
+    
+    # --- Top 5 Calculation ---
+    if len(new_in_week_ids) > 0 or len(deleted_in_week_ids) > 0:
+        c_new, c_del = st.columns(2)
         
-        # 1. New Registrations in last 7 days
-        all_first_seen = view_df.groupby('articleNo')['timestamp'].min()
-        all_first_seen_dt = pd.to_datetime(all_first_seen)
-        
-        new_in_week_ids = all_first_seen_dt[
-            (all_first_seen_dt > seven_days_ago) & 
-            (all_first_seen_dt <= current_dt)
-        ].index
-        
-        if len(new_in_week_ids) > 0:
-            # We need realtor names. Map ID to Realtor.
-            id_realtor_map = view_df.drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
-            week_new_counts = id_realtor_map.loc[id_realtor_map.index.intersection(new_in_week_ids)].value_counts().head(5)
-        else:
-            week_new_counts = pd.Series()
-
-        # 2. Deleted in last 7 days
-        all_last_seen = view_df.groupby('articleNo')['timestamp'].max()
-        all_last_seen_dt = pd.to_datetime(all_last_seen)
-        
-        deleted_in_week_ids = all_last_seen_dt[
-            (all_last_seen_dt > seven_days_ago) & 
-            (all_last_seen_dt < current_dt)
-        ].index
-        
-        if len(deleted_in_week_ids) > 0:
-             id_realtor_map_del = view_df.drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
-             week_del_counts = id_realtor_map_del.loc[id_realtor_map_del.index.intersection(deleted_in_week_ids)].value_counts().head(5)
-        else:
-             week_del_counts = pd.Series()
-             
-        # Display Side by Side
-        wc1, wc2 = st.columns(2)
-        with wc1:
-            st.markdown("##### ✨ 주간 최다 등록")
-            if not week_new_counts.empty:
-                wn_df = week_new_counts.reset_index()
-                wn_df.columns = ['부동산', '등록 건수']
-                st.dataframe(wn_df, hide_index=True, use_container_width=True)
+        # New Top 5
+        with c_new:
+            st.markdown("##### ✨ 주간 최다 등록 부동산")
+            if len(new_in_week_ids) > 0:
+                # Get Realtor Names
+                id_map = history_up_to_now.sort_values('timestamp').drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
+                target_realtors = id_map.reindex(new_in_week_ids)
+                top_new = target_realtors.value_counts().head(5).reset_index()
+                top_new.columns = ['부동산', '등록 수']
+                st.dataframe(top_new, hide_index=True, use_container_width=True)
             else:
-                st.info("데이터 없음")
-                
-        with wc2:
-            st.markdown("##### 🗑️ 주간 최다 삭제")
-            if not week_del_counts.empty:
-                wd_df = week_del_counts.reset_index()
-                wd_df.columns = ['부동산', '삭제 건수']
-                st.dataframe(wd_df, hide_index=True, use_container_width=True)
-                 
+                st.info("신규 등록 없음")
+
+        # Deleted Top 5
+        with c_del:
+            st.markdown("##### 🗑️ 주간 최다 삭제 부동산")
+            if len(deleted_in_week_ids) > 0:
+                id_map_del = history_up_to_now.sort_values('timestamp').drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
+                target_realtors_del = id_map_del.reindex(deleted_in_week_ids)
+                top_del = target_realtors_del.value_counts().head(5).reset_index()
+                top_del.columns = ['부동산', '삭제 수']
+                st.dataframe(top_del, hide_index=True, use_container_width=True)
+            else:
+                st.info("삭제된 매물 없음")
     else:
-        st.info("최근 1주일 데이터가 부족합니다.")
+        st.info("최근 1주일간 변동 데이터가 없습니다.")
 
 
 # --- Main Layout with Tabs ---
