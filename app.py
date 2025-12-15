@@ -4,6 +4,7 @@ import plotly.express as px
 import time
 import streamlit.components.v1 as components
 from utils import load_data
+from datetime import datetime, timedelta
 
 # Page Config
 st.set_page_config(
@@ -82,174 +83,248 @@ filtered_df = df[df['atclNm'].isin(selected_complex)]
 unique_timestamps = sorted(filtered_df['timestamp'].unique(), reverse=True)
 
 
-# --- Helper Function: Render Dashboard ---
+# --- Helper: Area Type Classifier ---
+def get_area_type(size):
+    try:
+        s = float(size)
+        if 50 <= s < 70: return '59'
+        elif 70 <= s < 100: return '84'
+        elif 100 <= s < 135: return '120'
+        elif 135 <= s < 165: return '152'
+        elif 165 <= s < 200: return '175'
+        else: return '기타'
+    except:
+        return '기타'
+
+# --- Helper: Render Dashboard ---
 def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     """
     Renders the metrics, charts, and table for a specific timestamp.
-    
-    Args:
-        view_df (pd.DataFrame): Dataframe filtered by complex (all history).
-        current_ts (str): The specific timestamp to render.
-        all_timestamps (list): List of all sorted timestamps (desc) for trend calc.
-        key_suffix (str): Unique key suffix for widgets.
     """
     if not current_ts:
         st.error("데이터가 없습니다.")
         return
 
-    ts_display = pd.to_datetime(current_ts).strftime("%Y/%m/%d %H:%M")
+    ts_display = pd.to_datetime(current_ts).strftime("%Y년 %m월 %d일 %H:%M")
     
     # Snapshot at current_ts
-    snapshot_df = view_df[view_df['timestamp'] == current_ts]
-    latest_count = len(snapshot_df)
-    avg_price = snapshot_df['price_int'].mean()
+    snapshot_df = view_df[view_df['timestamp'] == current_ts].copy()
+    snapshot_df['type'] = snapshot_df['spc2'].apply(get_area_type)
     
-    # Calculate Diff vs Previous relative to current_ts
-    # Find index of current_ts in all_timestamps
+    # Previous Snapshot Logic
+    count_diff = 0
+    prev_snapshot_df = pd.DataFrame()
+    
     try:
         curr_idx = all_timestamps.index(current_ts)
-        # Prev is next index because sorted reverse=True (Newest first)
         prev_idx = curr_idx + 1
-        
         if prev_idx < len(all_timestamps):
             prev_ts = all_timestamps[prev_idx]
-            prev_snapshot = view_df[view_df['timestamp'] == prev_ts]
+            prev_snapshot_df = view_df[view_df['timestamp'] == prev_ts].copy()
+            prev_snapshot_df['type'] = prev_snapshot_df['spc2'].apply(get_area_type)
             
-            count_diff = latest_count - len(prev_snapshot)
+            count_diff = len(snapshot_df) - len(prev_snapshot_df)
             
-            # New Arrivals
-            new_ids = set(snapshot_df['articleNo']) - set(prev_snapshot['articleNo'])
-            new_listing_count = len(new_ids)
-            
-            # Deleted items
-            deleted_ids = set(prev_snapshot['articleNo']) - set(snapshot_df['articleNo'])
-            deleted_count = len(deleted_ids)
+            # New/Deleted Sets
+            new_ids = set(snapshot_df['articleNo']) - set(prev_snapshot_df['articleNo'])
+            deleted_ids = set(prev_snapshot_df['articleNo']) - set(snapshot_df['articleNo'])
         else:
-            count_diff = 0
-            new_listing_count = 0
-            deleted_count = 0
             new_ids = set()
             deleted_ids = set()
     except ValueError:
-        # timestamp not found?
-        count_diff = 0
-        new_listing_count = 0
-        deleted_count = 0
         new_ids = set()
         deleted_ids = set()
 
-    # Metrics Row
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric(f"매물 수 ({ts_display})", f"{latest_count}개")
-    col2.metric(f"평균 가격", f"{avg_price/100000000:.2f} 억" if avg_price else "0 억")
-    col3.metric("증감 (이전 대비)", f"{count_diff:+}개", delta=count_diff)
-    col4.metric("신규 진입", f"{new_listing_count}개")
-    col5.metric("삭제됨", f"{deleted_count}개")
+    new_listing_count = len(new_ids)
+    deleted_count = len(deleted_ids)
+    avg_price = snapshot_df['price_int'].mean() if not snapshot_df.empty else 0
 
-    # --- Details for New/Deleted ---
-    if new_listing_count > 0:
-        with st.expander(f"🆕 신규 진입 매물 ({new_listing_count}개) 상세보기"):
-            new_entries_df = snapshot_df[snapshot_df['articleNo'].isin(new_ids)].copy()
-            # Select relevant columns for display
-            disp_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
-            show_df = new_entries_df[disp_cols]
-            show_df.columns = ['면적', '가격', '층수', '향', '동', '중개사']
-            st.dataframe(show_df, hide_index=True)
+    # --- 1. Top Metrics (Overall) ---
+    st.markdown("### 📊 전체 현황")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric(f"전체 매물 수", f"{len(snapshot_df)}개")
+    c2.metric(f"전체 평균 가격", f"{avg_price/100000000:.2f} 억")
+    c3.metric("전체 증감", f"{count_diff:+}개", delta=count_diff)
+    c4.metric("신규 진입", f"{new_listing_count}개")
+    c5.metric("삭제됨", f"{deleted_count}개")
 
-    if deleted_count > 0:
-        with st.expander(f"🗑️ 삭제된 매물 ({deleted_count}개) 상세보기"):
-            # Get details from previous snapshot
-            del_entries_df = prev_snapshot[prev_snapshot['articleNo'].isin(deleted_ids)].copy()
-            disp_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
-            show_df = del_entries_df[disp_cols]
-            show_df.columns = ['면적', '가격', '층수', '향', '동', '중개사']
-            st.dataframe(show_df, hide_index=True)
+    # --- 2. Type-based Metrics (59, 84, 120, 152, 175) ---
+    st.markdown("### 📐 타입별 현황 (59, 84, 120, 152, 175)")
+    target_types = ['59', '84', '120', '152', '175']
+    
+    # Calculate metrics per type
+    type_metrics = []
+    for t in target_types:
+        # Current
+        curr_t = snapshot_df[snapshot_df['type'] == t]
+        c_cnt = len(curr_t)
+        c_avg = curr_t['price_int'].mean() if not curr_t.empty else 0
+        
+        # Prev
+        p_cnt = 0
+        if not prev_snapshot_df.empty:
+            prev_t = prev_snapshot_df[prev_snapshot_df['type'] == t]
+            p_cnt = len(prev_t)
+        
+        diff = c_cnt - p_cnt
+        type_metrics.append((t, c_cnt, c_avg, diff))
+    
+    # Display Type Metrics in Columns
+    cols = st.columns(len(target_types))
+    for idx, (t, cnt, avg, diff) in enumerate(type_metrics):
+        with cols[idx]:
+            st.markdown(f"**{t} 타입**")
+            st.metric("매물 수", f"{cnt}", delta=diff)
+            # st.caption(f"평균: {avg/100000000:.2f}억") # Optional: clean display
+            st.markdown(f"<span style='font-size:0.8em; color:gray'>평균: {avg/100000000:.2f}억</span>", unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # --- Lowest Price Table ---
-    st.subheader(f"📉 전용면적별 최저가 매물 ({ts_display})")
-    if not snapshot_df.empty:
-        idx = snapshot_df.groupby('spc2')['price_int'].idxmin()
-        lowest_price_df = snapshot_df.loc[idx].sort_values('spc2')
-        
-        display_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
-        display_df = lowest_price_df[display_cols].copy()
-        display_df.columns = ['전용면적', '가격', '층수', '향', '동', '중개사']
-        st.dataframe(display_df, width="stretch", hide_index=True, key=f"tbl_lowest_{key_suffix}")
-
-    st.markdown("---")
-
-    # --- Charts ---
-    col_c1, col_c2 = st.columns(2)
+    # --- 3. Trend Chart (Moved Up) ---
+    st.subheader(f"📈 매물 수집 증감 추이 (~{ts_display})")
     
-    with col_c1:
-        step = 100000000
-        min_p = int(snapshot_df['price_int'].min()) if not snapshot_df.empty else 0
-        max_p = int(snapshot_df['price_int'].max()) if not snapshot_df.empty else 0
-        
-        if max_p > min_p:
-            # Align min_p down to nearest step (1억)
-            start_val = (min_p // step) * step
-            # Align max_p up to nearest step
-            end_val = ((max_p // step) + 1) * step
-            
-            tick_vals = list(range(start_val, end_val + step, step))
-            def format_kr(x):
-                 eok = x // 100000000
-                 chun = (x % 100000000) // 10000
-                 if chun == 0: return f"{eok}억"
-                 elif chun == 5000: return f"{eok}억 5천"
-                 else: return f"{x/100000000:.1f}억"
-            tick_text = [format_kr(x) for x in tick_vals]
-        else:
-            tick_vals = []
-            tick_text = []
-
-        fig_hist = px.histogram(snapshot_df, x="price_int", nbins=20, title=f"매물 가격 분포 ({ts_display})")
-        fig_hist.update_xaxes(tickformat=".1f", ticksuffix="억", title="가격 (원)", 
-                              tickvals=tick_vals, ticktext=tick_text)
-        st.plotly_chart(fig_hist, use_container_width=True, key=f"chart_price_dist_{key_suffix}")
-        
-    with col_c2:
-        fig_area = px.histogram(snapshot_df, x="spc2", nbins=10, title="면적별 매물 분포")
-        fig_area.update_xaxes(title="전용면적 (m²)")
-        fig_area.update_yaxes(title="매물 수")
-        st.plotly_chart(fig_area, use_container_width=True, key=f"chart_area_dist_{key_suffix}")
-
-    # Trend Chart (Up to current_ts)
-    # We filter data <= current_ts (to simulate history if we are in past)
-    # But for 'Recent 10 trends', usually we want to see context leading up to this point.
-    
-    # Filter trend dataframe up to selected timestamp
     trend_view_df = view_df[view_df['timestamp'] <= current_ts]
     trend_agg = trend_view_df.groupby('timestamp').size().reset_index(name='count')
     trend_agg['timestamp_dt'] = pd.to_datetime(trend_agg['timestamp'])
-    
-    # Take last 10 points ending at current_ts
-    trend_agg = trend_agg.sort_values('timestamp_dt').tail(10)
-    
-    trend_agg['xaxis_label'] = trend_agg['timestamp_dt'].dt.strftime("%Y/%m/%d %H:%M")
+    trend_agg = trend_agg.sort_values('timestamp_dt').tail(20) # Show bit more history
+    trend_agg['xaxis_label'] = trend_agg['timestamp_dt'].dt.strftime("%m/%d %H:%M")
     
     fig_line = px.line(trend_agg, x='xaxis_label', y='count', markers=True, 
-                       title=f"매물 수집 증감 추이 (~{ts_display})",
                        labels={"xaxis_label": "일시", "count": "매물 수"})
-    
     if not trend_agg.empty:
-        y_min = max(0, trend_agg['count'].min() - 10)
-        y_max = trend_agg['count'].max() + 10
-        fig_line.update_yaxes(tickformat="d", dtick=1, range=[y_min, y_max])
-        
-    fig_line.update_xaxes(type='category')
+         y_min = max(0, trend_agg['count'].min() - 5)
+         y_max = trend_agg['count'].max() + 5
+         fig_line.update_yaxes(tickformat="d", dtick=1, range=[y_min, y_max])
     
-    # Highlight the current point
-    # We can add a marker or just standard line is fine.
-    
-    st.plotly_chart(fig_line, use_container_width=True, key=f"chart_total_trend_{key_suffix}")
+    st.plotly_chart(fig_line, use_container_width=True, key=f"chart_trend_{key_suffix}")
 
     st.markdown("---")
-    st.subheader(f"📋 전체 매물 데이터 ({ts_display})")
-    st.dataframe(snapshot_df.sort_values(by="tradePrice", ascending=False), width="stretch", key=f"tbl_all_{key_suffix}")
+
+    # --- 4. Lowest Price by Type ---
+    st.subheader("📉 전용면적별 최저가 매물")
+    
+    if not snapshot_df.empty:
+        # Group by Type and Find Min Price
+        # We want to ensure we cover the target types if they exist
+        lowest_list = []
+        
+        for t in target_types:
+            type_df = snapshot_df[snapshot_df['type'] == t]
+            if not type_df.empty:
+                min_price = type_df['price_int'].min()
+                # Get the row(s) with min price. For the summary table, take the first one or distinct ones.
+                # User asked to group by these types.
+                # Let's show the ONE cheapest representative for the summary table
+                cheapest_rep = type_df[type_df['price_int'] == min_price].iloc[0]
+                lowest_list.append(cheapest_rep)
+        
+        if lowest_list:
+            lowest_df = pd.DataFrame(lowest_list)
+            # Columns: 전용면적/가격/동/층수/향/중개사
+            # 'spc2' is used for display as per user existing code
+            disp_cols = ['spc2', 'tradePrice', 'buildingName', 'floorInfo', 'direction', 'realtorName']
+            final_lowest = lowest_df[disp_cols].copy()
+            final_lowest.columns = ['전용면적', '가격', '동', '층수', '향', '중개사']
+            st.caption("타입별 최저가 대표 매물")
+            st.dataframe(final_lowest, hide_index=True, width="stretch")
+            
+        # --- 5. All Lowest Price Listings ---
+        st.markdown("#### 🏘️ 전용면적별 최저가 매물 부동산 전체")
+        # Find ALL listings that match the min price for their type
+        all_lowest_rows = []
+        for t in target_types:
+            type_df = snapshot_df[snapshot_df['type'] == t]
+            if not type_df.empty:
+                min_price = type_df['price_int'].min()
+                matches = type_df[type_df['price_int'] == min_price].copy()
+                matches['type'] = t
+                all_lowest_rows.append(matches)
+        
+        if all_lowest_rows:
+            full_lowest_df = pd.concat(all_lowest_rows)
+            disp_cols = ['spc2', 'tradePrice', 'buildingName', 'floorInfo', 'direction', 'realtorName', 'type']
+            f_lowest = full_lowest_df[disp_cols].copy()
+            f_lowest = f_lowest.sort_values(['type', 'tradePrice'])
+            f_lowest.columns = ['전용면적', '가격', '동', '층수', '향', '중개사', '타입']
+            st.dataframe(f_lowest, hide_index=True, width="stretch")
+            
+            # --- 6. Top 5 Realtors (Lowest Price Count) ---
+            st.markdown("#### 🏆 최저가 매물 최다 등록 부동산 (Top 5)")
+            top_lp_realtors = full_lowest_df['realtorName'].value_counts().head(5).reset_index()
+            top_lp_realtors.columns = ['부동산', '최저가 매물 수']
+            st.dataframe(top_lp_realtors, hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+    
+    # --- 7. Weekly Activity (Top 5) ---
+    st.subheader("📅 주간 부동산 활동 (Top 5)")
+    
+    # Calculate Weekly Stats
+    # Need access to full history or at least enough to determine "First Seen" in last 7 days
+    # view_df has full filtered history.
+    
+    current_dt = pd.to_datetime(current_ts)
+    seven_days_ago = current_dt - timedelta(days=7)
+    
+    # Filter relevant history
+    period_df = view_df[(pd.to_datetime(view_df['timestamp']) > seven_days_ago) & 
+                        (pd.to_datetime(view_df['timestamp']) <= current_dt)]
+    
+    if not period_df.empty:
+        # Valid Article IDs in current snapshot
+        current_ids = set(snapshot_df['articleNo'])
+        
+        # 1. New Registrations in last 7 days
+        all_first_seen = view_df.groupby('articleNo')['timestamp'].min()
+        all_first_seen_dt = pd.to_datetime(all_first_seen)
+        
+        new_in_week_ids = all_first_seen_dt[
+            (all_first_seen_dt > seven_days_ago) & 
+            (all_first_seen_dt <= current_dt)
+        ].index
+        
+        if len(new_in_week_ids) > 0:
+            # We need realtor names. Map ID to Realtor.
+            id_realtor_map = view_df.drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
+            week_new_counts = id_realtor_map.loc[id_realtor_map.index.intersection(new_in_week_ids)].value_counts().head(5)
+        else:
+            week_new_counts = pd.Series()
+
+        # 2. Deleted in last 7 days
+        all_last_seen = view_df.groupby('articleNo')['timestamp'].max()
+        all_last_seen_dt = pd.to_datetime(all_last_seen)
+        
+        deleted_in_week_ids = all_last_seen_dt[
+            (all_last_seen_dt > seven_days_ago) & 
+            (all_last_seen_dt < current_dt)
+        ].index
+        
+        if len(deleted_in_week_ids) > 0:
+             id_realtor_map_del = view_df.drop_duplicates('articleNo', keep='last').set_index('articleNo')['realtorName']
+             week_del_counts = id_realtor_map_del.loc[id_realtor_map_del.index.intersection(deleted_in_week_ids)].value_counts().head(5)
+        else:
+             week_del_counts = pd.Series()
+             
+        # Display Side by Side
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            st.markdown("##### ✨ 주간 최다 등록")
+            if not week_new_counts.empty:
+                wn_df = week_new_counts.reset_index()
+                wn_df.columns = ['부동산', '등록 건수']
+                st.dataframe(wn_df, hide_index=True, use_container_width=True)
+            else:
+                st.info("데이터 없음")
+                
+        with wc2:
+            st.markdown("##### 🗑️ 주간 최다 삭제")
+            if not week_del_counts.empty:
+                wd_df = week_del_counts.reset_index()
+                wd_df.columns = ['부동산', '삭제 건수']
+                st.dataframe(wd_df, hide_index=True, use_container_width=True)
+                 
+    else:
+        st.info("최근 1주일 데이터가 부족합니다.")
 
 
 # --- Main Layout with Tabs ---
@@ -266,13 +341,12 @@ with tab2:
     st.info("과거 시점의 데이터를 조회합니다.")
     
     if unique_timestamps:
-        # Selectbox for history
-        # Format for display: "YYYY-MM-DD HH:MM (Count: N)"
+        # Helper to format options for Korean Context
+        ts_options_map = {ts: pd.to_datetime(ts).strftime("%Y년 %m월 %d일 %H:%M") for ts in unique_timestamps}
         
-        # Helper to format options
-        timestamp_options = unique_timestamps
-        
-        sel_ts = st.selectbox("조회할 시점 선택", timestamp_options, key="hist_ts_selector")
+        sel_ts = st.selectbox("조회할 시점 선택", unique_timestamps, 
+                              format_func=lambda x: ts_options_map[x],
+                              key="hist_ts_selector")
         
         if sel_ts:
             render_dashboard_view(filtered_df, sel_ts, unique_timestamps, key_suffix="history")
@@ -281,13 +355,10 @@ with tab2:
 
 with tab3:
     st.header("🕵️ 상세 분석 (최신 기준)")
-    # Defaults to latest for now, or we could allow history here too, but user asked for "Dashboard" history.
-    # We will keep this as "Analytics" typically on latest or all data.
-    # Let's use latest_df for consistency with previous behavior.
-    
+    # Defaults to latest for now
     if unique_timestamps:
         latest_ts = unique_timestamps[0]
-        latest_df = filtered_df[filtered_df['timestamp'] == latest_ts]
+        latest_df = filtered_df[filtered_df['timestamp'] == latest_ts].copy()
         
         subtab1, subtab2 = st.tabs(["🏢 부동산(중개사)별", "🏙️ 동(Building)별"])
         
@@ -305,13 +376,11 @@ with tab3:
                     st.divider()
                     st.markdown(f"#### '{s_real}' 상세")
                     
-                    # For trends in detail view, we show ALL history for that realtor
                     r_trend = filtered_df[filtered_df['realtorName'] == s_real].groupby('timestamp').size().reset_index(name='count')
                     r_trend['ts'] = pd.to_datetime(r_trend['timestamp'])
                     r_trend = r_trend.sort_values('ts')
                     
                     fig_r = px.line(r_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                    fig_r.update_yaxes(tickformat="d", dtick=1, range=[0, 20])
                     st.plotly_chart(fig_r, use_container_width=True, key="chart_realtor_trend")
                     
                     st.dataframe(latest_df[latest_df['realtorName'] == s_real], width="stretch", hide_index=True, key="tbl_realtor_detail")
@@ -335,11 +404,16 @@ with tab3:
                     b_trend = b_trend.sort_values('ts')
                     
                     fig_b = px.line(b_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                    fig_b.update_yaxes(tickformat="d", dtick=1, range=[0, 20])
                     st.plotly_chart(fig_b, use_container_width=True, key="chart_building_trend")
                     
                     st.dataframe(latest_df[latest_df['buildingName'] == s_build], width="stretch", hide_index=True, key="tbl_building_detail")
-
-    # Export (Always available in Detailed tab)
+    
+    # --- Moved All Data Table Here ---
+    st.markdown("---")
+    st.subheader("📋 전체 매물 데이터 (최신)")
+    if unique_timestamps:
+        st.dataframe(latest_df.sort_values(by="tradePrice", ascending=False), width="stretch", key="tbl_all_details")
+    
+    # Export
     csv = filtered_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("💾 CSV 다운로드", csv, "naver_land_data.csv", "text/csv")
