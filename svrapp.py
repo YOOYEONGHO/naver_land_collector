@@ -272,18 +272,34 @@ data = load_data()
 if data:
     df = pd.DataFrame(data)
     
+    # Format timestamp (Treat as Local time, ignore/drop UTC offset if present)
+    if not df.empty and 'timestamp' in df.columns:
+        # 1. Convert to datetime
+        df['dt'] = pd.to_datetime(df['timestamp'])
+        
+        # 2. Drop timezone (make naive) to keep the face value "00:20:13"
+        # Since we know the DB stored "00:20:13" (which was KST) as UTC "00:20:13+00"
+        if df['dt'].dt.tz is not None:
+             df['dt'] = df['dt'].dt.tz_localize(None)
+             
+        # 3. Format
+        df['fmt_ts'] = df['dt'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        df['fmt_ts'] = "-"
+
     col1, col2, col3 = st.columns(3)
     col1.metric("총 수집 데이터", f"{len(df)} 건")
     
-    latest_ts = df['timestamp'].max() if not df.empty else "-"
+    latest_ts = df['fmt_ts'].max() if not df.empty else "-"
     col2.metric("최근 수집 시각", latest_ts)
     
     uniq = df['atclNm'].nunique() if 'atclNm' in df.columns else 0
     col3.metric("수집 단지 수", f"{uniq} 개")
     
     st.markdown("### 📋 수집 이력 로그")
-    history = df.groupby('timestamp').size().reset_index(name='Count')
-    history = history.sort_values('timestamp', ascending=False)
+    history = df.groupby('fmt_ts').size().reset_index(name='Count')
+    history = history.sort_values('fmt_ts', ascending=False)
+    history.columns = ['timestamp', 'Count'] # Rename for display
     st.dataframe(history, width="stretch")
 
 else:
