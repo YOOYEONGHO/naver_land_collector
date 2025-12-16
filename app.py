@@ -72,8 +72,21 @@ if len(all_complexes) > 0:
     selected_complex_name = st.sidebar.selectbox("단지 선택", all_complexes, index=0)
     selected_complex = [selected_complex_name] # Keep as list for compatibility with load_data
 else:
-    st.sidebar.warning("단지 정보가 없습니다.")
-    st.stop()
+    if not complex_list:
+        st.error("❌ 단지 정보를 불러올 수 없습니다.")
+        
+        st.markdown("---")
+        st.subheader("🔍 디버그 정보")
+        
+        st.write(f"**Supabase 연결 상태:** {'✅ 정상' if IS_SUPABASE_READY else '❌ 연결 실패'}")
+        st.write(f"**불러온 단지 목록:** {all_complexes}")
+        
+        st.warning("""
+        **확인 사항:**
+        1. `config.py` 파일이 함께 업로드 되었는지 확인해주세요.
+        2. `secrets.toml` 설정이 정확한지 확인해주세요.
+        """)
+        st.stop()
 
 if not selected_complex:
     st.info("👈 왼쪽 사이드바에서 분석할 단지를 선택해주세요.")
@@ -179,7 +192,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     avg_price = snapshot_df['price_int'].mean() if not snapshot_df.empty else 0
 
     # --- 1. Top Metrics (Overall) ---
-    st.markdown(f"### 📊 전체 현황 <span style='font-size:0.8em; color:gray'>({ts_display} 기준)</span>", unsafe_allow_html=True)
+    st.markdown(f"### 📊 전체 현황: {selected_complex_name} <span style='font-size:0.8em; color:gray'>({ts_display} 기준)</span>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(f"전체 매물 수", f"{len(snapshot_df)}개")
     c2.metric(f"전체 평균 가격", f"{avg_price/100000000:.2f} 억")
