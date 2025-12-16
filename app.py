@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import time
 import streamlit.components.v1 as components
-from utils import load_data, get_complex_list
+from utils import load_data, get_complex_list, IS_SUPABASE_READY
 from datetime import datetime, timedelta
 
 # Page Config
@@ -47,6 +47,21 @@ components.html(auto_refresh_html, height=0)
 
 # --- Sidebar: Lazy Loading Complex Selection ---
 st.sidebar.header("🔎 분석 필터")
+
+if not IS_SUPABASE_READY:
+    st.sidebar.error("⚠️ 클라우드 설정 필요")
+    st.sidebar.info("""
+    **Supabase 연결 정보가 없습니다.**
+    
+    Streamlit Cloud의 **Manage App > Secrets** 메뉴에 다음 설정을 추가해주세요.
+    
+    ```toml
+    [supabase]
+    url = "YOUR_SUPABASE_URL"
+    key = "YOUR_SUPABASE_KEY"
+    ```
+    """)
+    st.stop()
 
 # 1. Fetch List (Lightweight)
 all_complexes = get_complex_list()
