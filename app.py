@@ -53,11 +53,12 @@ all_complexes = get_complex_list()
 selected_complex = []
 
 if len(all_complexes) > 0:
-    # Default to first (most recent) if available
-    default_sel = [all_complexes[0]] if all_complexes else []
-    selected_complex = st.sidebar.multiselect("단지 선택 (필수)", all_complexes, default=default_sel)
+    # Default to first
+    selected_complex_name = st.sidebar.selectbox("단지 선택", all_complexes, index=0)
+    selected_complex = [selected_complex_name] # Keep as list for compatibility with load_data
 else:
-    st.sidebar.warning("수집된 단지 정보가 없거나 DB 연결 실패.")
+    st.sidebar.warning("단지 정보가 없습니다.")
+    st.stop()
 
 if not selected_complex:
     st.info("👈 왼쪽 사이드바에서 분석할 단지를 선택해주세요.")
@@ -73,6 +74,21 @@ if not data:
 
 df = pd.DataFrame(data)
 
+# --- Data Cleaning (User Request) ---
+# Exclude anomaly: DMC View Xi (108064) @ 2025-12-14 23:40
+if not df.empty and 'timestamp' in df.columns and 'atclNm' in df.columns:
+    # Filter specific timestamps for DMC Park View Xi (User Requests: 2025-12-14 23:40, 2025-12-15 00:40)
+    anomalies = ['2025-12-14T23:40', '2025-12-15T00:40']
+    
+    # Construct mask (atclNm == DMC AND timestamp matches any anomaly)
+    mask_dmc = (df['atclNm'] == 'DMC파크뷰자이')
+    mask_ts = df['timestamp'].str.contains('|'.join(anomalies), na=False)
+    
+    anomaly_mask = mask_dmc & mask_ts
+    
+    if anomaly_mask.any():
+        df = df[~anomaly_mask]
+
 # Ensure columns
 for col in ["buildingName", "realtorName", "direction"]:
     if col not in df.columns:
@@ -85,7 +101,9 @@ if 'articleNo' in df.columns:
 df['price_eok'] = df['price_int'] / 100000000
 
 # Apply Filter (Standard DataFrame Filter)
-filtered_df = df[df['atclNm'].isin(selected_complex)]
+# Note: specific table (listings_{id}) is already queried, so strict filtering by atclNm is risky for migrated data.
+# We bypass the name check to ensure all rows in the table are shown.
+filtered_df = df 
 unique_timestamps = sorted(filtered_df['timestamp'].unique(), reverse=True)
 
 
@@ -146,7 +164,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     avg_price = snapshot_df['price_int'].mean() if not snapshot_df.empty else 0
 
     # --- 1. Top Metrics (Overall) ---
-    st.markdown("### 📊 전체 현황")
+    st.markdown(f"### 📊 전체 현황 <span style='font-size:0.8em; color:gray'>({ts_display} 기준)</span>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(f"전체 매물 수", f"{len(snapshot_df)}개")
     c2.metric(f"전체 평균 가격", f"{avg_price/100000000:.2f} 억")
@@ -191,7 +209,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     
     trend_view_df = view_df[view_df['timestamp'] <= current_ts]
     trend_agg = trend_view_df.groupby('timestamp').size().reset_index(name='count')
-    trend_agg['timestamp_dt'] = pd.to_datetime(trend_agg['timestamp'])
+    trend_agg['timestamp_dt'] = pd.to_datetime(trend_agg['timestamp'], format='mixed', errors='coerce', utc=True)
     trend_agg = trend_agg.sort_values('timestamp_dt').tail(50) # Show more history as we have it now
     trend_agg['xaxis_label'] = trend_agg['timestamp_dt'].dt.strftime("%m/%d %H:%M")
     
@@ -203,7 +221,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
          fig_line.update_yaxes(tickformat="d", dtick=1, range=[y_min, y_max])
     
     # use_container_width is standard for Plotly charts in Streamlit
-    st.plotly_chart(fig_line, use_container_width=True, key=f"chart_trend_{key_suffix}")
+    st.plotly_chart(fig_line, width="stretch", key=f"chart_trend_{key_suffix}")
 
     st.markdown("---")
 
@@ -311,29 +329,36 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
                 del_in_step = prev_ids - curr_ids
                 
                 if new_in_step or del_in_step:
-                    cum_new_count += len(new_in_step)
-                    cum_del_count += len(del_in_step)
+                    n_cnt = len(new_in_step)
+                    d_cnt = len(del_in_step)
                     
-                    change_events.append({
-                        "timestamp": curr_ts,
-                        "prev_timestamp": prev_ts,
-                        "new_count": len(new_in_step),
-                        "del_count": len(del_in_step),
-                        "new_ids": list(new_in_step),
-                        "del_ids": list(del_in_step),
-                        "display_ts": curr_dt.strftime("%m월 %d일 %H:%M")
-                    })
-                    
-                    # Debug Log
-                    debug_logs.append(f"[{curr_ts}] New: {len(new_in_step)}, Del: {len(del_in_step)}")
-                    
-                    for nid in new_in_step:
-                        r_name = curr_items.get(nid, "알수없음")
-                        realtor_new_counts[r_name] = realtor_new_counts.get(r_name, 0) + 1
-                    
-                    for did in del_in_step:
-                        r_name = prev_items.get(did, "알수없음")
-                        realtor_del_counts[r_name] = realtor_del_counts.get(r_name, 0) + 1
+                    # Anomaly Filter (User Request): Skip if change > 30 (likely refresh/glitch)
+                    if n_cnt > 30 or d_cnt > 30:
+                        debug_logs.append(f"[{curr_ts}] Skipped Anomaly (New: {n_cnt}, Del: {d_cnt})")
+                    else:
+                        cum_new_count += n_cnt
+                        cum_del_count += d_cnt
+                        
+                        change_events.append({
+                            "timestamp": curr_ts,
+                            "prev_timestamp": prev_ts,
+                            "new_count": n_cnt,
+                            "del_count": d_cnt,
+                            "new_ids": list(new_in_step),
+                            "del_ids": list(del_in_step),
+                            "display_ts": curr_dt.strftime("%m월 %d일 %H:%M")
+                        })
+                        
+                        # Debug Log
+                        debug_logs.append(f"[{curr_ts}] New: {n_cnt}, Del: {d_cnt}")
+                        
+                        for nid in new_in_step:
+                            r_name = curr_items.get(nid, "알수없음")
+                            realtor_new_counts[r_name] = realtor_new_counts.get(r_name, 0) + 1
+                        
+                        for did in del_in_step:
+                            r_name = prev_items.get(did, "알수없음")
+                            realtor_del_counts[r_name] = realtor_del_counts.get(r_name, 0) + 1
             else:
                 pass 
                 # debug_logs.append(f"[{curr_ts}] Skipped (Old: < {seven_days_ago})")
@@ -459,32 +484,82 @@ with tab2:
     if unique_timestamps:
         # Hierarchical Selection: Date -> Time
         
-        # 1. Parse Dates
-        ts_dt_list = [pd.to_datetime(ts) for ts in unique_timestamps]
-        date_set = sorted(list(set([dt.strftime("%Y년 %m월 %d일") for dt in ts_dt_list])), reverse=True)
+        # 1. Parse Dates safely (Robust Logic)
+        ts_idx = pd.to_datetime(unique_timestamps, format='mixed', errors='coerce', utc=True)
+        # Convert to Naive (strip timezone) for display consistency
+        ts_idx = ts_idx.tz_localize(None)
         
-        c_h1, c_h2 = st.columns(2)
-        with c_h1:
-            sel_date_str = st.selectbox("📅 날짜 선택 (년-월-일)", date_set, key="hist_date_sel")
-            
-        if sel_date_str:
-            # Filter timestamps
-            filtered_ts_list = [
-                ts for ts in unique_timestamps 
-                if pd.to_datetime(ts).strftime("%Y년 %m월 %d일") == sel_date_str
-            ]
-            
-            # Time Map (HH:MM)
-            ts_opt_map = {ts: pd.to_datetime(ts).strftime("%H:%M") for ts in filtered_ts_list}
-            
-            with c_h2:
-                sel_time = st.selectbox("⏰ 시간 선택", filtered_ts_list, 
-                                        format_func=lambda x: ts_opt_map[x],
-                                        key="hist_time_sel")
-            
-            if sel_time:
-                 st.divider()
-                 render_dashboard_view(filtered_df, sel_time, unique_timestamps, key_suffix="history")
+        # Zip with original strings to keep mapping and filter NaT
+        valid_pairs = []
+        for orig, dt in zip(unique_timestamps, ts_idx):
+             if pd.notna(dt):
+                 valid_pairs.append((orig, dt))
+        
+        if not valid_pairs:
+             st.error("유효한 날짜 데이터가 없습니다.")
+        else:
+             # Extract Dates
+             date_set = sorted(list(set([p[1].strftime("%Y년 %m월 %d일") for p in valid_pairs])), reverse=True)
+             
+             c_h1, c_h2 = st.columns(2)
+             with c_h1:
+                sel_date_str = st.selectbox("📅 날짜 선택 (년-월-일)", date_set, key="hist_date_sel")
+             
+             if sel_date_str:
+                 # Filter by date
+                 filtered_pairs = [p for p in valid_pairs if p[1].strftime("%Y년 %m월 %d일") == sel_date_str]
+                 # Sort by time Descending
+                 filtered_pairs.sort(key=lambda x: x[1], reverse=True)
+                 
+                 filtered_ts_strs = [p[0] for p in filtered_pairs]
+                 
+                 with c_h2:
+                     # Fixed 20-min slots for 24 hours
+                     fixed_slots = []
+                     for h in range(24):
+                         for m in [0, 20, 40]:
+                             fixed_slots.append(f"{h:02d}:{m:02d}")
+                             
+                     # Identify available times
+                     available_times = set([p[1].strftime("%H:%M") for p in filtered_pairs])
+                     
+                     def format_slot(slot):
+                         if slot in available_times:
+                             return f"🔴 {slot} (데이터 있음)"
+                         else:
+                             return f"⚪ {slot} (수집 안됨)"
+
+                     sel_time_slot = st.selectbox("⏰ 시간 선택 (수집 주기)", fixed_slots, format_func=format_slot)
+                 
+                 if sel_time_slot:
+                      # Find matching data
+                      matched_ts = None
+                      # Prefer exact match? or just first that matches HH:MM
+                      for p in filtered_pairs:
+                          if p[1].strftime("%H:%M") == sel_time_slot:
+                              matched_ts = p[0]
+                              break
+                      
+                      if matched_ts:
+                          st.divider()
+                          render_dashboard_view(filtered_df, matched_ts, unique_timestamps, key_suffix="history")
+                      else:
+                          st.info(f"선택하신 시간({sel_time_slot})에 수집된 데이터가 없습니다.")
+        
+        with st.expander("🐞 데이터 기간 진단"):
+            st.write(f"총 스냅샷 수: {len(unique_timestamps)}")
+            if valid_pairs:
+                min_dt = min([p[1] for p in valid_pairs])
+                max_dt = max([p[1] for p in valid_pairs])
+                st.write(f"데이터 범위: {min_dt} ~ {max_dt}")
+                
+            st.write(f"원본 타임스탬프 샘플(Top 5): {unique_timestamps[:5]}")
+            if len(unique_timestamps) > 5:
+                st.write(f"원본 타임스탬프 샘플(Tail 5): {unique_timestamps[-5:]}")
+
+            if 'atclNm' in df.columns:
+                 st.write("데이터 내 단지명(atclNm) 분포:")
+                 st.write(df['atclNm'].value_counts())
     else:
         st.warning("데이터가 없습니다.")
 
@@ -512,11 +587,11 @@ with tab3:
                     st.markdown(f"#### '{s_real}' 상세")
                     
                     r_trend = filtered_df[filtered_df['realtorName'] == s_real].groupby('timestamp').size().reset_index(name='count')
-                    r_trend['ts'] = pd.to_datetime(r_trend['timestamp'])
+                    r_trend['ts'] = pd.to_datetime(r_trend['timestamp'], format='mixed', errors='coerce', utc=True)
                     r_trend = r_trend.sort_values('ts')
                     
                     fig_r = px.line(r_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                    st.plotly_chart(fig_r, use_container_width=True, key="chart_realtor_trend")
+                    st.plotly_chart(fig_r, width="stretch", key="chart_realtor_trend")
                     
                     st.dataframe(latest_df[latest_df['realtorName'] == s_real], width="stretch", hide_index=True, key="tbl_realtor_detail")
 
@@ -535,11 +610,11 @@ with tab3:
                     st.markdown(f"#### '{s_build}' 상세")
                     
                     b_trend = filtered_df[filtered_df['buildingName'] == s_build].groupby('timestamp').size().reset_index(name='count')
-                    b_trend['ts'] = pd.to_datetime(b_trend['timestamp'])
+                    b_trend['ts'] = pd.to_datetime(b_trend['timestamp'], format='mixed', errors='coerce', utc=True)
                     b_trend = b_trend.sort_values('ts')
                     
                     fig_b = px.line(b_trend, x='timestamp', y='count', markers=True, title="매물 등록 추이")
-                    st.plotly_chart(fig_b, use_container_width=True, key="chart_building_trend")
+                    st.plotly_chart(fig_b, width="stretch", key="chart_building_trend")
                     
                     st.dataframe(latest_df[latest_df['buildingName'] == s_build], width="stretch", hide_index=True, key="tbl_building_detail")
     

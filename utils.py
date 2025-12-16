@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
 from datetime import datetime, timezone, timedelta
+from config import COMPLEX_INFO  # Import config
 
 # --- Supabase Initialization ---
 # Initialize connection using st.secrets
@@ -30,56 +31,88 @@ def get_timestamp_str():
 
 def get_complex_list():
     """
-    Fetches distinct 'atclNm' (Complex Names) from recent data.
-    Used for Sidebar population without loading full dataset.
+    Returns list of complex names defined in config.
     """
-    if not IS_SUPABASE_READY:
-        return []
+    return list(COMPLEX_INFO.values())
 
-    try:
-        # Fetch only 'atclNm' from recent 5000 rows to get active complexes
-        # Note: Supabase doesn't support 'distinct' easily via client select
-        response = supabase.table("listings").select("atclNm").order("timestamp", desc=True).limit(5000).execute()
-        if response.data:
-            df = pd.DataFrame(response.data)
-            return sorted(df['atclNm'].dropna().unique())
-        return []
-    except Exception as e:
-        print(f"[Supabase] Get Complexes failed: {e}")
-        return []
+def get_complex_id_by_name(name):
+    """
+    Helper to get ID from Name
+    """
+    for pid, pname in COMPLEX_INFO.items():
+        if pname == name:
+            return pid
+    return None
 
 def load_data(target_complexes=None):
     """
-    Loads data from Supabase 'listings' table.
+    Loads data from Supabase complex-specific tables.
     Args:
-        target_complexes (list): Optional. List of complex names to filter by.
+        target_complexes (list): Optional. List of complex NAMES to filter by.
     Returns: List of dictionaries (records).
     """
     if not IS_SUPABASE_READY:
         return []
 
+    all_data = []
+
+    # If no target specified, maybe load all? Or just return empty to be safe/fast?
+    # Let's default to loading ALL configured complexes if None
+    if not target_complexes:
+        target_complexes = list(COMPLEX_INFO.values())
+
     try:
-        query = supabase.table("listings").select("*").order("timestamp", desc=True)
+        for name in target_complexes:
+            cid = get_complex_id_by_name(name)
+            if not cid:
+                continue
+            
+            table_name = f"listings_{cid}"
+            
+            # Query with Pagination loop to bypass API limit (usually 1000)
+            rows_per_batch = 1000
+            current_start = 0
+            max_limit = 50000 # Safety hard cap
+            
+            while True:
+                current_end = current_start + rows_per_batch - 1
+                try:
+                    response = supabase.table(table_name).select("*") \
+                                .order("timestamp", desc=True) \
+                                .range(current_start, current_end).execute()
+                                
+                    if not response.data:
+                        break
+                        
+                    all_data.extend(response.data)
+                    
+                    if len(response.data) < rows_per_batch:
+                        break # End of data
+                        
+                    current_start += rows_per_batch
+                    
+                    if len(all_data) >= max_limit:
+                        print(f"[Supabase] {table_name} max limit reached ({max_limit})")
+                        break
+                        
+                except Exception as loop_e:
+                    print(f"[Supabase] Pagination error on {table_name}: {loop_e}")
+                    break
         
-        # Filter if specified (Lazy Loading)
-        if target_complexes and len(target_complexes) > 0:
-            query = query.in_("atclNm", target_complexes)
-        
-        # Limit 100,000 is now effective for the SPECIFIC complex(es)
-        response = query.limit(100000).execute()
-        return response.data
+        return all_data
         
     except Exception as e:
         print(f"[Supabase] Load failed: {e}")
         return []
 
-def save_data(new_items):
+def save_data(new_items, complex_id="108064"):
     """
-    Upserts new items into Supabase 'listings' table.
-    Uses 'articleNo' as the conflict key (Primary Key).
+    Upserts new items into Supabase complex-specific table.
     """
     if not new_items or not IS_SUPABASE_READY:
-        return
+        return False
+        
+    table_name = f"listings_{complex_id}"
 
     try:
         # Define valid columns matching the created SQL table
@@ -110,28 +143,31 @@ def save_data(new_items):
             return False
 
         # Insert (append history)
-        response = supabase.table("listings").insert(cleaned_items).execute()
+        response = supabase.table(table_name).insert(cleaned_items).execute()
         
-        print(f"[System] Successfully inserted {len(cleaned_items)} records to Supabase.")
+        print(f"[System] Successfully inserted {len(cleaned_items)} records into {table_name}.")
         return True
         
     except Exception as e:
-        print(f"[Supabase] Save failed: {e}")
+        print(f"[Supabase] Save failed to {table_name}: {e}")
         return False
 
 def clear_data():
     """
-    Deletes ALL data from 'listings' table.
+    Deletes ALL data from ALL configured tables.
     """
     if not IS_SUPABASE_READY:
         return
 
     try:
-        # neq usually used to filter. 'articleNo' != '0' (assuming no article has id 0, or just use a condition that covers all)
-        # Better: delete where articleNo is NOT NULL
-        supabase.table("listings").delete().neq("articleNo", "0").execute()
+        for cid in COMPLEX_INFO.keys():
+            table_name = f"listings_{cid}"
+            # neq usually used to filter. 'articleNo' != '0' (assuming no article has id 0)
+            supabase.table(table_name).delete().neq("articleNo", "0").execute()
+            print(f"[System] Cleared table {table_name}")
+            
         st.cache_data.clear()
-        print("[System] Supabase table cleared.")
+        print("[System] All Supabase tables cleared.")
     except Exception as e:
         print(f"[Supabase] Clear failed: {e}")
 

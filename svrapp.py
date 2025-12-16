@@ -8,6 +8,7 @@ import threading
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 from crawler import NaverLandCrawler
 from utils import load_data, save_data, clear_data
+from config import COMPLEX_INFO
 import streamlit.components.v1 as components
 
 # Page Config
@@ -58,26 +59,29 @@ def run_collection_task(c_id, t_code):
     inv_map = {v: k for k, v in trade_type_map.items()}
     t_label = inv_map.get(t_code, t_code)
     
+    c_name = COMPLEX_INFO.get(str(c_id), str(c_id))
+    
     now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now_str}] [Scheduler] Start collection: {c_id}, {t_label}")
+    print(f"[{now_str}] [Scheduler] Start collection: {c_name}({c_id}), {t_label}")
     try:
         crawler = NaverLandCrawler()
         new_data = crawler.fetch_listings(complex_no=c_id, trade_type=t_code)
         if new_data:
-            if save_data(new_data):
-                msg = f"수집 완료: {len(new_data)}건"
+            # Pass c_id to save_data for table selection
+            if save_data(new_data, complex_id=c_id):
+                msg = f"[{c_name}] 수집 완료: {len(new_data)}건"
                 print(f"[Scheduler] {msg}")
                 return True, msg
             else:
-                msg = "수집 데이터 저장 실패 (로그 확인)"
+                msg = f"[{c_name}] 수집 데이터 저장 실패 (로그 확인)"
                 print(f"[Scheduler] {msg}")
                 return False, msg
         else:
-            msg = "매물 없음 또는 API 오류"
+            msg = f"[{c_name}] 매물 없음 또는 API 오류"
             print(f"[Scheduler] {msg}")
             return False, msg
     except Exception as e:
-        msg = f"오류: {e}"
+        msg = f"[{c_name}] 오류: {e}"
         print(f"[Scheduler] {msg}")
         return False, msg
 
@@ -86,7 +90,7 @@ class BackgroundScheduler:
     def __init__(self):
         self.is_running = False
         self.interval_minutes = 30
-        self.complex_id = "108064"
+        self.target_complex_ids = ["108064"] # List of IDs
         self.trade_type = "A1"
         
         self.last_run_time = 0
@@ -96,15 +100,15 @@ class BackgroundScheduler:
         self._lock = threading.Lock()
         self.status_msg = "초기화 대기"
 
-    def start(self, interval, complex_id, trade_type):
+    def start(self, interval, complex_ids, trade_type):
         with self._lock:
             self.interval_minutes = interval
-            self.complex_id = complex_id
+            self.target_complex_ids = complex_ids if isinstance(complex_ids, list) else [complex_ids]
             self.trade_type = trade_type
             self.is_running = True
             
             # Reset schedule
-            self.last_run_time = 0 # Or keep history? let's reset for immediate run or schedule
+            self.last_run_time = 0 
             
             # OPTION: Run immediately on start? 
             # Let's schedule first run immediately for feedback
@@ -130,17 +134,23 @@ class BackgroundScheduler:
                 if now >= self.next_run_time:
                     # Time to run!
                     self.status_msg = "수집 실행 중..."
-                    success, msg = run_collection_task(self.complex_id, self.trade_type)
+                    
+                    results = []
+                    for cid in self.target_complex_ids:
+                        success, msg = run_collection_task(cid, self.trade_type)
+                        results.append(msg)
+                        time.sleep(1) # Intentional small delay between calls
                     
                     # Schedule next
-
                     self.last_run_time = time.time()
                     interval_sec = self.interval_minutes * 60
                     self.next_run_time = math.ceil(time.time() / interval_sec) * interval_sec 
                     
                     next_run_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.next_run_time))
+                    
+                    # Short summary for status
                     self.status_msg = f"대기 중 (다음 수집: {next_run_str})"
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [Scheduler] Collection finished. Next run scheduled at: {next_run_str}")
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [Scheduler] Batch finished. Next run: {next_run_str}")
             
             time.sleep(1)
 
@@ -155,12 +165,21 @@ scheduler = get_scheduler()
 st.sidebar.header("🛠 수집 설정")
 
 # Defaults from Scheduler or Config
-# Since scheduler is singleton, we can pull checks from it if running
-default_complex = config.get("complex_id", "108064")
+default_complex_ids = config.get("complex_ids", ["108064"]) # Changed key to plural
 default_interval = int(config.get("interval", 30))
 default_tradetype = config.get("tradetype", "매매 (Sale)")
 
-complex_id = st.sidebar.text_input("단지 식별 번호 (hscpNo)", value=default_complex)
+# Complex Selection (Checkboxes)
+st.sidebar.subheader("대상 단지 선택")
+selected_complex_ids = []
+for cid, cname in COMPLEX_INFO.items():
+    is_checked = cid in default_complex_ids
+    if st.sidebar.checkbox(f"{cname} ({cid})", value=is_checked):
+        selected_complex_ids.append(cid)
+
+if not selected_complex_ids:
+    st.sidebar.warning("최소 1개 이상의 단지를 선택해야 합니다.")
+
 trade_type_map = {"매매 (Sale)": "A1", "전세 (Jeonse)": "B1", "월세 (Rent)": "B2"}
 trade_options = list(trade_type_map.keys())
 
@@ -182,13 +201,17 @@ password_input = st.sidebar.text_input("관리자 비밀번호", type="password"
 
 # Callbacks
 def on_start_click():
+    if not selected_complex_ids:
+        st.error("단지를 선택해주세요.")
+        return
+
     if st.session_state.admin_pw == "Aqwe123!@#":
-        scheduler.start(interval_min, complex_id, trade_type_code)
+        scheduler.start(interval_min, selected_complex_ids, trade_type_code)
         
         # Persist config
         save_config({
             "is_auto_active": True,
-            "complex_id": complex_id,
+            "complex_ids": selected_complex_ids,
             "interval": interval_min,
             "tradetype": trade_type_label
         })
@@ -210,13 +233,13 @@ def on_clear_data_click():
     if st.session_state.admin_pw == "Aqwe123!@#":
         clear_data()
         st.session_state.admin_pw = ""
-        st.success("데이터가 삭제되었습니다.")
+        st.success("모든 단지의 데이터가 삭제되었습니다.")
     else:
         st.error("비밀번호 불일치")
 
 col_btn1, col_btn2 = st.sidebar.columns(2)
-col_btn1.button("🚀 수집 시작", on_click=on_start_click, use_container_width=True, disabled=scheduler.is_running)
-col_btn2.button("🛑 수집 중지", on_click=on_stop_click, use_container_width=True, disabled=not scheduler.is_running)
+col_btn1.button("🚀 수집 시작", on_click=on_start_click, width="stretch", disabled=scheduler.is_running)
+col_btn2.button("🛑 수집 중지", on_click=on_stop_click, width="stretch", disabled=not scheduler.is_running)
 
 # --- Status Display ---
 st.sidebar.markdown("---")
@@ -230,12 +253,10 @@ if scheduler.is_running:
         if remain < 0: remain = 0
         st.sidebar.info(f"다음 수집: {int(remain)}초 후")
         
-        # Simple auto-refresh for UI (not logic)
-        # Refresh every 10s just to update the "seconds left" visual
-        # Logic handles itself in background even if this loop dies
-        
-        # We use a simple meta refresh or st.rerun if we want lively updates
-        # But extensive reruns are annoying. Let's do a gentle JS interval for reload
+        # Current Targets
+        target_names = [COMPLEX_INFO.get(cid, cid) for cid in scheduler.target_complex_ids]
+        st.sidebar.caption(f"수집 대상: {', '.join(target_names)}")
+
     if st.sidebar.button("🔄 상태 새로고침"):
         st.rerun()
 
@@ -268,39 +289,64 @@ st.sidebar.button("🗑️ 모든 데이터 삭제", on_click=on_clear_data_clic
 
 # --- Dashboard ---
 # Load FRESH data
-data = load_data()
+# Note: For Server view, we might want to see Aggregate or allow filtering?
+# For now, let's load all data from selected complexes for general stats
+data = load_data(target_complexes=[COMPLEX_INFO[cid] for cid in selected_complex_ids if cid in COMPLEX_INFO])
 if data:
     df = pd.DataFrame(data)
     
     # Format timestamp (Treat as Local time, ignore/drop UTC offset if present)
     if not df.empty and 'timestamp' in df.columns:
         # 1. Convert to datetime
-        df['dt'] = pd.to_datetime(df['timestamp'])
+        df['dt'] = pd.to_datetime(df['timestamp'], format='mixed', errors='coerce', utc=True)
         
         # 2. Drop timezone (make naive) to keep the face value "00:20:13"
-        # Since we know the DB stored "00:20:13" (which was KST) as UTC "00:20:13+00"
-        if df['dt'].dt.tz is not None:
-             df['dt'] = df['dt'].dt.tz_localize(None)
+        df['dt'] = df['dt'].dt.tz_localize(None)
              
         # 3. Format
         df['fmt_ts'] = df['dt'].dt.strftime('%Y-%m-%d %H:%M:%S')
     else:
         df['fmt_ts'] = "-"
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("총 수집 데이터", f"{len(df)} 건")
+    # Create tabs for Overall + Each Selected Complex
+    tab_names = ["📊 전체 요약"] + [COMPLEX_INFO.get(cid, cid) for cid in selected_complex_ids if cid in COMPLEX_INFO]
+    tabs = st.tabs(tab_names)
     
-    latest_ts = df['fmt_ts'].max() if not df.empty else "-"
-    col2.metric("최근 수집 시각", latest_ts)
-    
-    uniq = df['atclNm'].nunique() if 'atclNm' in df.columns else 0
-    col3.metric("수집 단지 수", f"{uniq} 개")
-    
-    st.markdown("### 📋 수집 이력 로그")
-    history = df.groupby('fmt_ts').size().reset_index(name='Count')
-    history = history.sort_values('fmt_ts', ascending=False)
-    history.columns = ['timestamp', 'Count'] # Rename for display
-    st.dataframe(history, width="stretch")
+    # 1. Overall Tab
+    with tabs[0]:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("총 수집 데이터", f"{len(df)} 건")
+        latest_ts = df['fmt_ts'].max() if not df.empty else "-"
+        c2.metric("최근 수집 시각", latest_ts)
+        uniq = df['atclNm'].nunique() if 'atclNm' in df.columns else 0
+        c3.metric("수집 단지 수", f"{uniq} 개")
+        
+        st.markdown("### 📋 전체 수집 로그")
+        history = df.groupby('fmt_ts').size().reset_index(name='Count')
+        history = history.sort_values('fmt_ts', ascending=False)
+        history.columns = ['timestamp', 'Count']
+        st.dataframe(history, width="stretch")
+
+    # 2. Individual Complex Tabs
+    for i, cid in enumerate([c for c in selected_complex_ids if c in COMPLEX_INFO]):
+        with tabs[i+1]:
+            c_name = COMPLEX_INFO[cid]
+            c_df = df[df['atclNm'] == c_name]
+            
+            if not c_df.empty:
+                sc1, sc2 = st.columns(2)
+                sc1.metric(f"{c_name} 데이터", f"{len(c_df)} 건")
+                c_latest = c_df['fmt_ts'].max()
+                sc2.metric("최근 수집", c_latest)
+                
+                st.markdown(f"#### 📜 {c_name} 수집 로그")
+                c_hist = c_df.groupby('fmt_ts').size().reset_index(name='Count')
+                c_hist = c_hist.sort_values('fmt_ts', ascending=False)
+                c_hist.columns = ['timestamp', 'Count']
+                st.dataframe(c_hist, width="stretch")
+            else:
+                st.info(f"{c_name}에 대한 수집 데이터가 없습니다.")
 
 else:
     st.info("수집된 데이터가 없습니다.")
+
