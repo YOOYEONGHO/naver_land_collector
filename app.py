@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import time
 import streamlit.components.v1 as components
-from utils import load_data
+from utils import load_data, get_complex_list
 from datetime import datetime, timedelta
 
 # Page Config
@@ -45,11 +45,30 @@ auto_refresh_html = f"""
 components.html(auto_refresh_html, height=0)
 
 
-# Load Data
-data = load_data()
+# --- Sidebar: Lazy Loading Complex Selection ---
+st.sidebar.header("🔎 분석 필터")
+
+# 1. Fetch List (Lightweight)
+all_complexes = get_complex_list()
+selected_complex = []
+
+if len(all_complexes) > 0:
+    # Default to first (most recent) if available
+    default_sel = [all_complexes[0]] if all_complexes else []
+    selected_complex = st.sidebar.multiselect("단지 선택 (필수)", all_complexes, default=default_sel)
+else:
+    st.sidebar.warning("수집된 단지 정보가 없거나 DB 연결 실패.")
+
+if not selected_complex:
+    st.info("👈 왼쪽 사이드바에서 분석할 단지를 선택해주세요.")
+    st.stop()
+
+# 2. Load Data (Access Deep History for Selection)
+with st.spinner(f"'{', '.join(selected_complex)}' 데이터 로딩 중 (최대 100,000건)..."):
+    data = load_data(target_complexes=selected_complex)
 
 if not data:
-    st.info("데이터가 아직 수집되지 않았습니다. 서버(svrapp.py)에서 수집을 시작해주세요.")
+    st.warning("선택한 단지의 데이터가 없습니다.")
     st.stop()
 
 df = pd.DataFrame(data)
@@ -59,26 +78,13 @@ for col in ["buildingName", "realtorName", "direction"]:
     if col not in df.columns:
         df[col] = "정보없음"
 
+# Type enforcement for robust set operations
+if 'articleNo' in df.columns:
+    df['articleNo'] = df['articleNo'].astype(str)
+
 df['price_eok'] = df['price_int'] / 100000000
 
-# --- Sidebar: Filters Only ---
-st.sidebar.header("🔎 분석 필터")
-
-complexes = df['atclNm'].unique()
-default_selection = []
-
-if len(complexes) > 0:
-    # Default to latest updated complex
-    latest_complex = df.sort_values("timestamp", ascending=False).iloc[0]['atclNm']
-    default_selection = [latest_complex]
-
-selected_complex = st.sidebar.multiselect("단지 선택", complexes, default=default_selection)
-
-if not selected_complex:
-    st.warning("왼쪽 사이드바에서 단지를 선택해주세요.")
-    st.image("https://via.placeholder.com/800x400?text=Select+Complex", width=600)
-    st.stop()
-
+# Apply Filter (Standard DataFrame Filter)
 filtered_df = df[df['atclNm'].isin(selected_complex)]
 unique_timestamps = sorted(filtered_df['timestamp'].unique(), reverse=True)
 
@@ -180,13 +186,13 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
 
     st.markdown("---")
 
-    # --- 3. Trend Chart (Moved Up) ---
+    # --- 3. Trend Chart (Generic) ---
     st.subheader(f"📈 매물 수집 증감 추이 (~{ts_display})")
     
     trend_view_df = view_df[view_df['timestamp'] <= current_ts]
     trend_agg = trend_view_df.groupby('timestamp').size().reset_index(name='count')
     trend_agg['timestamp_dt'] = pd.to_datetime(trend_agg['timestamp'])
-    trend_agg = trend_agg.sort_values('timestamp_dt').tail(20) # Show bit more history
+    trend_agg = trend_agg.sort_values('timestamp_dt').tail(50) # Show more history as we have it now
     trend_agg['xaxis_label'] = trend_agg['timestamp_dt'].dt.strftime("%m/%d %H:%M")
     
     fig_line = px.line(trend_agg, x='xaxis_label', y='count', markers=True, 
@@ -196,6 +202,7 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
          y_max = trend_agg['count'].max() + 5
          fig_line.update_yaxes(tickformat="d", dtick=1, range=[y_min, y_max])
     
+    # use_container_width is standard for Plotly charts in Streamlit
     st.plotly_chart(fig_line, use_container_width=True, key=f"chart_trend_{key_suffix}")
 
     st.markdown("---")
@@ -252,86 +259,88 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
             st.markdown("#### 🏆 최저가 매물 최다 등록 부동산 (Top 5)")
             top_lp_realtors = full_lowest_df['realtorName'].value_counts().head(5).reset_index()
             top_lp_realtors.columns = ['부동산', '최저가 매물 수']
-            st.dataframe(top_lp_realtors, hide_index=True, use_container_width=True)
+            st.dataframe(top_lp_realtors, hide_index=True, width="stretch")
 
     st.markdown("---")
     
-    # --- 7. Weekly Activity (CUMULATIVE EVENTS) ---
-    st.subheader("📅 주간 부동산 활동 (Top 5)")
-    st.caption("최근 1주일간 매 회차(약 20분)마다 발생한 신규/삭제 건수를 모두 누적한 수치입니다.")
+    # --- 7. Weekly Activity (CUMULATIVE EVENTS + CHANGE LOG) ---
+    st.subheader("📅 주간 부동산 활동 (Top 5 & 변동 로그)")
+    st.caption("최근 1주일 (로그 상에 데이터가 있는 시간부터) 매 회차마다 발생한 신규/삭제 건수를 누적한 수치입니다.")
 
-    # 1. Filter Period (Up to Current View)
-    history_up_to_now = view_df[view_df['timestamp'] <= current_ts].copy()
-    history_up_to_now['timestamp_dt'] = pd.to_datetime(history_up_to_now['timestamp'])
+    # 1. Scope: Full History UP TO Current (to ensure we have prev for comparison)
+    # But we want to 'Accumulate' only 7 days events.
     
     current_dt = pd.to_datetime(current_ts)
     seven_days_ago = current_dt - timedelta(days=7)
     
-    period_df = history_up_to_now[history_up_to_now['timestamp_dt'] > seven_days_ago]
+    history_up_to_now = view_df[view_df['timestamp'] <= current_ts].copy()
     
-    # 2. Sequential Processing
-    # Sort unique timestamps ASCENDING
-    sorted_ts = sorted(period_df['timestamp'].unique())
+    # 2. Sequential Processing on FULL history allows computing diffs at the boundary
+    sorted_ts = sorted(history_up_to_now['timestamp'].unique())
     
     cum_new_count = 0
     cum_del_count = 0
-    
     realtor_new_counts = {}
     realtor_del_counts = {}
+    change_events = []
     
-    # We Iterate from i=1. The snapshot at i=0 is the START STATE (Baseline).
-    # New items appearing in snapshot[0] are NOT counted, as they were "already there".
-    # Only changes from 0->1, 1->2... count.
+    debug_logs = [] # Gather debug info
     
     if len(sorted_ts) > 1:
-        # Pre-group by timestamp to avoid repeatedly filtering the big DF
-        grouped = period_df.groupby('timestamp')
-        
-        # Get set of IDs and Realtor mapping for each timestamp
-        # Optimization: Build a dict of {ts: {id: realtor_name}}
+        # Group all data
+        grouped = history_up_to_now.groupby('timestamp')
         ts_data_map = {}
         for ts, group in grouped:
-            # We use dict for fast lookup of realtor by ID
             ts_data_map[ts] = dict(zip(group['articleNo'], group['realtorName']))
             
-        # Iterate
         prev_ts = sorted_ts[0]
-        prev_items = ts_data_map[prev_ts] # dict {id: realtor}
+        prev_items = ts_data_map[prev_ts]
         
         for i in range(1, len(sorted_ts)):
             curr_ts = sorted_ts[i]
+            curr_dt = pd.to_datetime(curr_ts)
+            
             curr_items = ts_data_map[curr_ts]
             
-            prev_ids = set(prev_items.keys())
-            curr_ids = set(curr_items.keys())
-            
-            # Identify Changes
-            new_in_step = curr_ids - prev_ids
-            del_in_step = prev_ids - curr_ids
-            
-            # Accumulate Total Counts
-            cum_new_count += len(new_in_step)
-            cum_del_count += len(del_in_step)
-            
-            # Accumulate Realtor Counts
-            # For New: Use Realtor info from Current
-            for nid in new_in_step:
-                r_name = curr_items.get(nid, "알수없음")
-                realtor_new_counts[r_name] = realtor_new_counts.get(r_name, 0) + 1
-            
-            # For Deleted: Use Realtor info from Previous (when it existed)
-            for did in del_in_step:
-                r_name = prev_items.get(did, "알수없음")
-                realtor_del_counts[r_name] = realtor_del_counts.get(r_name, 0) + 1
-            
-            # Move Next
+            # Check Filtering Condition: Is this event within Last 7 Days?
+            if curr_dt > seven_days_ago:
+                prev_ids = set(prev_items.keys())
+                curr_ids = set(curr_items.keys())
+                
+                new_in_step = curr_ids - prev_ids
+                del_in_step = prev_ids - curr_ids
+                
+                if new_in_step or del_in_step:
+                    cum_new_count += len(new_in_step)
+                    cum_del_count += len(del_in_step)
+                    
+                    change_events.append({
+                        "timestamp": curr_ts,
+                        "prev_timestamp": prev_ts,
+                        "new_count": len(new_in_step),
+                        "del_count": len(del_in_step),
+                        "new_ids": list(new_in_step),
+                        "del_ids": list(del_in_step),
+                        "display_ts": curr_dt.strftime("%m월 %d일 %H:%M")
+                    })
+                    
+                    # Debug Log
+                    debug_logs.append(f"[{curr_ts}] New: {len(new_in_step)}, Del: {len(del_in_step)}")
+                    
+                    for nid in new_in_step:
+                        r_name = curr_items.get(nid, "알수없음")
+                        realtor_new_counts[r_name] = realtor_new_counts.get(r_name, 0) + 1
+                    
+                    for did in del_in_step:
+                        r_name = prev_items.get(did, "알수없음")
+                        realtor_del_counts[r_name] = realtor_del_counts.get(r_name, 0) + 1
+            else:
+                pass 
+                # debug_logs.append(f"[{curr_ts}] Skipped (Old: < {seven_days_ago})")
+
+            # Update prev for next iteration
             prev_ts = curr_ts
             prev_items = curr_items
-            
-    else:
-        # Only 1 snapshot exists (Fresh start). No changes yet.
-        pass
-
 
     # --- Summary Counts ---
     wc_total1, wc_total2 = st.columns(2)
@@ -341,29 +350,97 @@ def render_dashboard_view(view_df, current_ts, all_timestamps, key_suffix=""):
     # --- Top 5 Calculation ---
     if cum_new_count > 0 or cum_del_count > 0:
         c_new, c_del = st.columns(2)
-        
-        # New Top 5
         with c_new:
             st.markdown("##### ✨ 주간 최다 등록 부동산 (누적)")
             if realtor_new_counts:
-                # Convert dict to df
                 new_df = pd.DataFrame(list(realtor_new_counts.items()), columns=['부동산', '등록 건수'])
                 new_df = new_df.sort_values('등록 건수', ascending=False).head(5)
-                st.dataframe(new_df, hide_index=True, use_container_width=True)
+                st.dataframe(new_df, hide_index=True, width="stretch")
             else:
-                st.info("신규 등록 없음")
+                st.info("-")
 
-        # Deleted Top 5
         with c_del:
             st.markdown("##### 🗑️ 주간 최다 삭제 부동산 (누적)")
             if realtor_del_counts:
                 del_df = pd.DataFrame(list(realtor_del_counts.items()), columns=['부동산', '삭제 건수'])
                 del_df = del_df.sort_values('삭제 건수', ascending=False).head(5)
-                st.dataframe(del_df, hide_index=True, use_container_width=True)
+                st.dataframe(del_df, hide_index=True, width="stretch")
             else:
-                st.info("삭제된 매물 없음")
+                st.info("-")
     else:
         st.info("최근 1주일간 변동 데이터가 없습니다.")
+
+    st.markdown("---")
+    
+    # --- Change Log Interactive Table ---
+    st.subheader("📜 주간 변동 상세 로그")
+    st.caption("변동(추가/삭제)이 발생한 시점을 클릭하면 상세 내용을 볼 수 있습니다.")
+
+    if change_events:
+        log_df = pd.DataFrame(change_events)
+        log_disp_df = log_df[['display_ts', 'new_count', 'del_count']].copy()
+        log_disp_df.columns = ['일시', '신규 등록 (건)', '삭제 (건)']
+        # Show Newest First
+        log_disp_df = log_disp_df.iloc[::-1].reset_index(drop=True)
+        
+        sel_c_log = st.dataframe(
+            log_disp_df, 
+            width="stretch", 
+            on_select="rerun", 
+            selection_mode="single-row",
+            key=f"tbl_change_log_{key_suffix}"
+            )
+        
+        if sel_c_log.selection.rows:
+            sel_row_idx = sel_c_log.selection.rows[0]
+            # Map back to original log_df (log_df is ascending, display is descending)
+            actual_idx = len(change_events) - 1 - sel_row_idx
+            selected_event = change_events[actual_idx]
+            
+            sel_ts_str = selected_event['display_ts']
+            
+            st.divider()
+            st.markdown(f"#### 🔍 {sel_ts_str} 상세 변동 내역")
+            
+            # --- New Details ---
+            if selected_event['new_ids']:
+                st.markdown(f"**🔹 신규 등록 ({selected_event['new_count']}건)**")
+                e_ts = selected_event['timestamp']
+                e_snapshot = history_up_to_now[history_up_to_now['timestamp'] == e_ts]
+                e_new = e_snapshot[e_snapshot['articleNo'].isin(selected_event['new_ids'])]
+                
+                disp_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
+                start_disp = e_new[disp_cols].copy()
+                start_disp.columns = ['면적', '가격', '층수', '향', '동', '중개사']
+                st.dataframe(start_disp, hide_index=True)
+            
+            # --- Deleted Details ---
+            if selected_event['del_ids']:
+                st.markdown(f"**🔻 삭제됨 ({selected_event['del_count']}건)**")
+                p_ts = selected_event['prev_timestamp']
+                p_snapshot = history_up_to_now[history_up_to_now['timestamp'] == p_ts]
+                e_del = p_snapshot[p_snapshot['articleNo'].isin(selected_event['del_ids'])]
+                
+                disp_cols = ['spc2', 'tradePrice', 'floorInfo', 'direction', 'buildingName', 'realtorName']
+                del_disp = e_del[disp_cols].copy()
+                del_disp.columns = ['면적', '가격', '층수', '향', '동', '중개사']
+                st.dataframe(del_disp, hide_index=True)
+
+    else:
+        st.info("변동 이력이 없습니다.")
+    
+    # --- DEBUG SECTION ---
+    with st.expander("🛠️ 디버그 정보 (개발용)", expanded=False):
+        st.write(f"**Current TS**: {current_ts}")
+        st.write(f"**7 Days Ago Ref**: {seven_days_ago}")
+        st.write(f"**Snapshot Count**: {len(sorted_ts)}")
+        st.write(f"**ArticleNo Type**: {df['articleNo'].dtype}")
+        
+        if debug_logs:
+            st.write("Detected Events:")
+            st.code("\n".join(debug_logs))
+        else:
+            st.write("No events detected in loop.")
 
 
 # --- Main Layout with Tabs ---
@@ -380,15 +457,34 @@ with tab2:
     st.info("과거 시점의 데이터를 조회합니다.")
     
     if unique_timestamps:
-        # Helper to format options for Korean Context
-        ts_options_map = {ts: pd.to_datetime(ts).strftime("%Y년 %m월 %d일 %H:%M") for ts in unique_timestamps}
+        # Hierarchical Selection: Date -> Time
         
-        sel_ts = st.selectbox("조회할 시점 선택", unique_timestamps, 
-                              format_func=lambda x: ts_options_map[x],
-                              key="hist_ts_selector")
+        # 1. Parse Dates
+        ts_dt_list = [pd.to_datetime(ts) for ts in unique_timestamps]
+        date_set = sorted(list(set([dt.strftime("%Y년 %m월 %d일") for dt in ts_dt_list])), reverse=True)
         
-        if sel_ts:
-            render_dashboard_view(filtered_df, sel_ts, unique_timestamps, key_suffix="history")
+        c_h1, c_h2 = st.columns(2)
+        with c_h1:
+            sel_date_str = st.selectbox("📅 날짜 선택 (년-월-일)", date_set, key="hist_date_sel")
+            
+        if sel_date_str:
+            # Filter timestamps
+            filtered_ts_list = [
+                ts for ts in unique_timestamps 
+                if pd.to_datetime(ts).strftime("%Y년 %m월 %d일") == sel_date_str
+            ]
+            
+            # Time Map (HH:MM)
+            ts_opt_map = {ts: pd.to_datetime(ts).strftime("%H:%M") for ts in filtered_ts_list}
+            
+            with c_h2:
+                sel_time = st.selectbox("⏰ 시간 선택", filtered_ts_list, 
+                                        format_func=lambda x: ts_opt_map[x],
+                                        key="hist_time_sel")
+            
+            if sel_time:
+                 st.divider()
+                 render_dashboard_view(filtered_df, sel_time, unique_timestamps, key_suffix="history")
     else:
         st.warning("데이터가 없습니다.")
 
