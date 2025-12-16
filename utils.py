@@ -28,33 +28,45 @@ def get_timestamp_str():
     """Returns formatted timestamp string."""
     return get_kst_time().strftime("%Y-%m-%d %H:%M:%S")
 
-def load_data():
+def get_complex_list():
     """
-    Loads data directly from Supabase 'listings' table.
+    Fetches distinct 'atclNm' (Complex Names) from recent data.
+    Used for Sidebar population without loading full dataset.
+    """
+    if not IS_SUPABASE_READY:
+        return []
+
+    try:
+        # Fetch only 'atclNm' from recent 5000 rows to get active complexes
+        # Note: Supabase doesn't support 'distinct' easily via client select
+        response = supabase.table("listings").select("atclNm").order("timestamp", desc=True).limit(5000).execute()
+        if response.data:
+            df = pd.DataFrame(response.data)
+            return sorted(df['atclNm'].dropna().unique())
+        return []
+    except Exception as e:
+        print(f"[Supabase] Get Complexes failed: {e}")
+        return []
+
+def load_data(target_complexes=None):
+    """
+    Loads data from Supabase 'listings' table.
+    Args:
+        target_complexes (list): Optional. List of complex names to filter by.
     Returns: List of dictionaries (records).
     """
     if not IS_SUPABASE_READY:
         return []
 
     try:
-        # Fetch all records, sorted by timestamp descending
-        # LIMIT is optional, but for large datasets we might want to paginate later
-        # For now, let's fetch reasonable amount (e.g. 1000) or all?
-        # Supabase API usually caps at 1000 rows by default unless specified.
-        # User has ~100k rows. 100k rows to frontend is heavy.
-        # But current logic expects all data for stats. 
-        # Let's try to fetch all (might need range if > 1000).
+        query = supabase.table("listings").select("*").order("timestamp", desc=True)
         
-        # Simple fetch (default 1000 rows)
-        # response = supabase.table("listings").select("*").order("timestamp", desc=True).execute()
+        # Filter if specified (Lazy Loading)
+        if target_complexes and len(target_complexes) > 0:
+            query = query.in_("atclNm", target_complexes)
         
-        # To fetch MORE than 1000, we need to handle pagination or increase limit?
-        # Actually for a dashboard overview, maybe we just need recent data?
-        # User wants "Dashboard Listing Details".
-        # Let's start with a decent limit, say 10000, to ensure performant load.
-        # If user needs full historical analysis of 100k rows, we should move aggregation to SQL side eventually.
-        
-        response = supabase.table("listings").select("*").order("timestamp", desc=True).limit(5000).execute()
+        # Limit 100,000 is now effective for the SPECIFIC complex(es)
+        response = query.limit(100000).execute()
         return response.data
         
     except Exception as e:
